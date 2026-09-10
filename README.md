@@ -332,10 +332,28 @@ The seed creates a demo clinic whose public enquiry form is available at:
 
 /c/bright-smile-dental
 
-It also creates a demo staff account. The seed prints the demo email and password when it runs;
-those credentials are for local development only and must never be used in production.
+It also creates a demo staff account, configured entirely through the environment:
 
-Seeding is repeatable: re-running it replaces the demo clinic and demo user.
+- `DEMO_USER_EMAIL` sets the address (default `owner@bright-smile-demo.test`).
+- `DEMO_USER_PASSWORD` is optional. When set, the demo owner can sign in with it. When unset (the
+  default), the demo user is created **without any credential account** and cannot sign in at all.
+
+No demo password is ever stored in the repository. The seed refuses to run when `NODE_ENV` or
+`VERCEL_ENV` is `production` unless `ALLOW_DEMO_SEED=true`, and it never creates a sign-in credential
+in production regardless of that flag — production clinic owners are created through `/signup`.
+
+Seeding is repeatable: re-running it replaces the demo clinic and resets the demo user's credential to
+match the current environment.
+
+## Revoke A Seeded Demo Credential
+
+If a database was seeded by a revision that contained a hard-coded demo password, revoke it:
+
+npm run security:revoke-demo-credential              # dry run, prints what would change
+npm run security:revoke-demo-credential -- --apply   # deletes the credential and its sessions
+
+That touches only the demo user's credential account and sessions; the clinic, leads, notes and
+activity timeline are left untouched.
 
 ---
 

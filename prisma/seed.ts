@@ -2,7 +2,14 @@
  * Development seed.
  *
  * Creates one demo clinic with realistic-looking but entirely fictional leads.
- * Repeatable: re-running replaces the demo clinic and demo user.
+ * Repeatable: re-running replaces the demo clinic and its demo user's credential.
+ *
+ * Demo sign-in is configuration, never source code:
+ *   DEMO_USER_EMAIL     (default owner@bright-smile-demo.test)
+ *   DEMO_USER_PASSWORD  (unset by default -> the demo user cannot sign in at all)
+ *
+ * Refuses to run in production unless ALLOW_DEMO_SEED=true, and never creates a
+ * sign-in credential in production.
  *
  * Run with: npm run db:seed
  */
@@ -23,19 +30,63 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is not configured. Add it to .env.local before seeding.");
 }
 
-const adapter = new PrismaPg({ connectionString });
-const prisma = new PrismaClient({ adapter });
-
 const DEMO_CLINIC = {
   name: "Bright Smile Dental",
   slug: "bright-smile-dental",
 };
 
+/**
+ * A committed demo password becomes a real, reusable public credential the moment
+ * the seed runs against a database reachable from the internet, so it is never
+ * hard-coded here. Without DEMO_USER_PASSWORD the demo user is created without a
+ * credential account and cannot be signed into.
+ */
+const MIN_PASSWORD_LENGTH = 8;
+
+const isProduction =
+  process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
+
+if (isProduction && process.env.ALLOW_DEMO_SEED !== "true") {
+  throw new Error(
+    "Refusing to seed demo data in production. Set ALLOW_DEMO_SEED=true only if you deliberately want demo records in this environment.",
+  );
+}
+
 const DEMO_USER = {
-  name: "Demo Clinic Owner",
-  email: "owner@bright-smile-demo.test",
-  password: "[REDACTED-REVOKED-DEMO-PASSWORD]",
+  name: process.env.DEMO_USER_NAME ?? "Demo Clinic Owner",
+  email: process.env.DEMO_USER_EMAIL ?? "owner@bright-smile-demo.test",
 };
+
+/**
+ * Production never receives a seeded credential, even when demo seeding is
+ * explicitly allowed there: production owners are created through sign-up.
+ */
+function resolveDemoPassword(): string | null {
+  if (isProduction) {
+    return null;
+  }
+
+  const value = process.env.DEMO_USER_PASSWORD;
+
+  if (!value) {
+    return null;
+  }
+
+  if (value.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(
+      `DEMO_USER_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters (Better Auth enforces the same minimum).`,
+    );
+  }
+
+  return value;
+}
+
+const demoPassword = resolveDemoPassword();
+
+// Constructed only after the environment guards above have passed, so a refused
+// run never even opens a connection.
+const adapter = new PrismaPg({ connectionString });
+const prisma = new PrismaClient({ adapter });
 
 type SeedLead = {
   name: string;
@@ -151,32 +202,53 @@ const SEED_LEADS: SeedLead[] = [
 ];
 
 async function main() {
-  // Remove any previous demo data so the seed stays repeatable.
+  // Remove any previous demo clinic so the seed stays repeatable. Its leads,
+  // notes and activities cascade with it; nothing outside the demo slug is touched.
   await prisma.clinic.deleteMany({ where: { slug: DEMO_CLINIC.slug } });
-  await prisma.user.deleteMany({ where: { email: DEMO_USER.email } });
 
-  const user = await prisma.user.create({
-    data: {
+  // The demo user is reused instead of recreated so re-running the seed cannot
+  // delete or overwrite an account it does not own.
+  const user = await prisma.user.upsert({
+    where: { email: DEMO_USER.email },
+    update: {},
+    create: {
       name: DEMO_USER.name,
       email: DEMO_USER.email,
       emailVerified: true,
     },
   });
 
-  // Better Auth stores the credential hash in the account table. Hashing goes
-  // through Better Auth itself so the seeded password stays compatible.
-  const { auth } = await import("../lib/auth/auth");
-  const authContext = await auth.$context;
-  const passwordHash = await authContext.password.hash(DEMO_USER.password);
-
-  await prisma.account.create({
-    data: {
-      accountId: user.id,
-      providerId: "credential",
-      userId: user.id,
-      password: passwordHash,
-    },
+  // The demo user's sign-in state always matches this run's configuration, so a
+  // stale credential (for example one seeded by an older revision) cannot survive
+  // a re-seed and keep accepting a known password.
+  const removedCredentials = await prisma.account.deleteMany({
+    where: { userId: user.id, providerId: "credential" },
   });
+
+  if (demoPassword) {
+    // Better Auth stores the credential hash in the account table. Hashing goes
+    // through Better Auth itself so the seeded password stays compatible.
+    const { auth } = await import("../lib/auth/auth");
+    const authContext = await auth.$context;
+    const passwordHash = await authContext.password.hash(demoPassword);
+
+    await prisma.account.create({
+      data: {
+        accountId: user.id,
+        providerId: "credential",
+        userId: user.id,
+        password: passwordHash,
+      },
+    });
+  }
+
+  if (removedCredentials.count > 0) {
+    console.log(
+      demoPassword
+        ? "[seed] Replaced the existing demo credential with DEMO_USER_PASSWORD."
+        : "[seed] Removed an existing demo credential; DEMO_USER_PASSWORD is not set.",
+    );
+  }
 
   const clinic = await prisma.clinic.create({
     data: {
@@ -281,7 +353,12 @@ async function main() {
   console.log(
     `Seeded clinic "${DEMO_CLINIC.name}" (public form: /c/${DEMO_CLINIC.slug}) with ${SEED_LEADS.length} leads.`,
   );
-  console.log(`Demo staff login: ${DEMO_USER.email} / ${DEMO_USER.password}`);
+  console.log(`Demo staff account: ${DEMO_USER.email}`);
+  console.log(
+    demoPassword
+      ? "  -> sign-in is enabled with the password supplied through DEMO_USER_PASSWORD."
+      : "  -> no sign-in credential created (set DEMO_USER_PASSWORD to enable demo sign-in).",
+  );
 }
 
 main()

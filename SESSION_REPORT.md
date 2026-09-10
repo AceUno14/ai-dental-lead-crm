@@ -1,4 +1,144 @@
-# SESSION REPORT — Prisma Migration Repair & Database Verification
+# SESSION REPORTS — AI Dental Lead CRM
+
+Most recent session first.
+
+---
+
+# SESSION 3 — Security Remediation: Public Seeded Demo Credential
+
+Session date: 2026-09-11
+Scope: a working sign-in credential for the seeded demo owner was committed to this public repository
+and the deployed application points at the same Neon database. Remove it from source control, make
+seeding safe, and revoke the credential that already existed in the database.
+
+---
+
+## The vulnerability
+
+`prisma/seed.ts` contained a hard-coded `email` + `password` pair for the demo clinic owner
+(`owner@bright-smile-demo.test`). Because the repository is public and the Vercel deployment shares the
+seeded Neon database, that fixture was not demo data — it was a **live, reusable public credential**
+for the production CRM.
+
+It was not theoretical. `POST /api/auth/sign-in/email` with the seeded credential returned a valid
+session cookie, and the `session` table still held an **active** row from earlier QA. Revoking the
+password alone would have left that session usable until it expired.
+
+## Fix — source control
+
+`prisma/seed.ts` was rewritten so that demo sign-in is configuration, never source code:
+
+- The password literal is **gone**. Credentials come from `DEMO_USER_EMAIL` (default
+  `owner@bright-smile-demo.test`) and optional `DEMO_USER_PASSWORD`.
+- **When `DEMO_USER_PASSWORD` is unset, the demo user is created with no credential account at all** —
+  the demo data exists, but nobody can sign into it. This is now the default.
+- Production guard: the seed refuses to run when `NODE_ENV` or `VERCEL_ENV` is `production` unless
+  `ALLOW_DEMO_SEED=true`, and **never creates a sign-in credential in production** even then.
+  Production owners are created through `/signup`.
+- A password shorter than 8 characters (Better Auth's minimum) is rejected explicitly.
+- The demo user is now reused via `upsert` instead of deleted and recreated, and its credential is
+  reset to match the current environment on every run, so a credential left by an older revision cannot
+  survive a re-seed.
+- All guards run **before** the Prisma client is constructed, so a refused run never opens a database
+  connection.
+- The console output no longer echoes a password.
+- The literal was also redacted from `TASKS.md` and `DECISIONS.md` so the documentation does not
+  republish it.
+
+## Fix — database remediation
+
+New script `scripts/remove-demo-credential.mts` (dry-run by default), exposed as
+`npm run security:revoke-demo-credential`. It deletes the demo user's credential account **and revokes
+its sessions**, touching nothing else:
+
+```
+npm run security:revoke-demo-credential              # dry run
+npm run security:revoke-demo-credential -- --apply   # apply
+```
+
+Applied against the live Neon database:
+
+```
+Matched 1 user row(s) for owner@bright-smile-demo.test.
+  credential accounts to remove: 1
+  active sessions to revoke:     1
+  other linked providers kept:   0
+Deleted 1 credential account(s) and revoked 1 session(s).
+The clinic, leads, notes and activity timeline were not modified.
+```
+
+Data integrity confirmed immediately afterwards — **1 clinic, 9 leads (the submitted test lead is
+still present, status NEW), 4 notes, 32 activities, 1 membership, 0 credential accounts, 0 sessions**.
+
+## Verification
+
+```
+npx tsc --noEmit                    # PASS (exit 0)
+npm run lint                        # PASS (exit 0)
+npm run build                       # PASS (production build)
+NODE_ENV=production npx tsx prisma/seed.ts        # PASS — refuses, no DB access
+DEMO_USER_PASSWORD=short npx tsx prisma/seed.ts   # PASS — rejects, no DB access
+npm run security:revoke-demo-credential -- --apply # PASS — 1 credential + 1 session revoked
+```
+
+Runtime checks against `next start` on port 3100, using the real Neon database:
+
+| Check | Result |
+| --- | --- |
+| Old credential via `POST /api/auth/sign-in/email` | **401 INVALID_EMAIL_OR_PASSWORD** |
+| `/c/bright-smile-dental` (public enquiry form) | 200 — data intact |
+| `/dashboard` | 307 → `/login` — protection intact |
+| `grep` for the literal across the working tree | clean (only an unrelated `.env.example` placeholder) |
+
+The seed was deliberately **not** re-run against the live database: it replaces the demo clinic, which
+would delete the test lead.
+
+## Files touched
+
+| File | Change |
+| --- | --- |
+| `prisma/seed.ts` | Removed the hard-coded credential; env-driven password; production guards; upsert + credential reset; no password in logs |
+| `scripts/remove-demo-credential.mts` | New revocation script (credential **and** sessions), dry-run by default |
+| `package.json` | Added the `security:revoke-demo-credential` script |
+| `.env.example` | New optional `DEMO_USER_EMAIL`, `DEMO_USER_PASSWORD`, `ALLOW_DEMO_SEED` placeholders — no real values |
+| `TASKS.md` | Session note 6, T-007 security remediation note, CURRENT EXECUTION + session 3 verification log |
+| `DECISIONS.md` | Added **D-041 — Demo Credentials Are Configuration, Never Source Code** |
+| `README.md` | Rewrote the seed section; documented the revocation command |
+
+## Secrets
+
+`.env.local` was **not modified** and no secret values were printed. No credentials were fabricated.
+The new `.env.example` entries are placeholders only.
+
+## Known residue
+
+The removed literal still exists in this repository's git history (commits `598cfeb`, `f5bcdb6`). It is
+inert: the live credential is revoked, the seed cannot recreate it, and no other environment uses it.
+Removing it from history requires a rewrite and force push, which was not performed.
+
+## What the user must do next — create a secure production owner account
+
+1. Open the deployed app and go to **`/signup`**.
+2. Enter your name, your clinic name, a real staff email, and a **strong unique password** from a
+   password manager (12+ characters). Never reuse the old demo password.
+3. Submitting creates the Better Auth account **and** the clinic workspace with an `OWNER`
+   membership. Then sign in at **`/login`**.
+4. Do **not** run `npm run db:seed` against production — it now refuses unless `ALLOW_DEMO_SEED=true`,
+   and it would replace the demo clinic including the test lead.
+5. No new Vercel environment variables are required; `DEMO_USER_*` are local-only and should stay
+   unset in production.
+
+Two follow-ups worth noting:
+
+- The demo clinic now has **no reachable owner** (its only membership belongs to a user with no
+  credentials). The test lead is safe in the database; granting the new account an `OWNER` membership
+  on `bright-smile-dental` would restore access to it.
+- `/signup` is open registration, so anyone can create their own clinic workspace (tenant isolation is
+  verified — they cannot see other clinics' data). Locking registration down is optional hardening.
+
+---
+
+# SESSION 2 — Prisma Migration Repair & Database Verification
 
 Session date: 2026-09-11
 Scope: fix the failing Prisma migration, then complete every database-dependent task that was
@@ -115,7 +255,7 @@ ignored via the `.env*` rule in `.gitignore`. No credentials were fabricated.
 
 ---
 
-## Remaining blocker
+## Remaining blocker (still open after session 3 — session 3 added no new tasks)
 
 | Task | Status | Minimum action |
 | --- | --- | --- |

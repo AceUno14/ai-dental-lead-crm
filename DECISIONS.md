@@ -806,6 +806,49 @@ Consequences:
 
 ---
 
+# D-041 — Demo Credentials Are Configuration, Never Source Code
+
+Status:
+
+ACCEPTED
+
+Context:
+
+`prisma/seed.ts` hard-coded a demo email plus a fixed demo password. The repository is public and the
+deployed Vercel application shares the seeded Neon database, so a committed demo password was a live,
+reusable public credential rather than a harmless fixture. (The literal is deliberately not repeated
+here.)
+
+Decision:
+
+- Source code, documentation and `.env.example` never contain a usable password.
+- The seed reads `DEMO_USER_EMAIL` and `DEMO_USER_PASSWORD` from the environment. When
+  `DEMO_USER_PASSWORD` is unset, the demo user is created with no credential account at all, so the
+  demo data exists but cannot be signed into.
+- The seed refuses to run when `NODE_ENV` or `VERCEL_ENV` is `production` unless `ALLOW_DEMO_SEED=true`,
+  and it never creates a sign-in credential in production even then. Production owners register
+  through `/signup`.
+- The seed reuses the demo user row instead of deleting and recreating it, and resets that user's
+  credential to match the current configuration, so a stale credential cannot survive a re-seed.
+- `npm run security:revoke-demo-credential -- --apply` deletes the demo user's credential account and
+  revokes its sessions, leaving clinic data untouched.
+
+Reason:
+
+Seeding must be able to load realistic demo data into a shared database without ever creating an
+account that a stranger could sign into.
+
+Consequences:
+
+- Local development needs `DEMO_USER_PASSWORD` set explicitly to get a sign-in-capable demo account.
+- Revoking a credential is not enough on its own; existing sessions must be revoked too, which the
+  script does.
+- The removed literal still exists in earlier git history; it is inert because the live credential was
+  revoked, and removing it from history would require a history rewrite.
+- Automated tests must never assert against a committed password.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

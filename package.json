@@ -16,7 +16,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
-    "verify:e2e": "tsx scripts/verify-e2e.mts"
+    "verify:e2e": "tsx scripts/verify-e2e.mts",
+    "security:revoke-demo-credential": "tsx scripts/remove-demo-credential.mts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
