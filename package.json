@@ -17,6 +17,7 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "verify:e2e": "tsx scripts/verify-e2e.mts",
+    "verify:ai": "tsx scripts/verify-ai-provider.mts",
     "security:revoke-demo-credential": "tsx scripts/remove-demo-credential.mts"
   },
   "dependencies": {

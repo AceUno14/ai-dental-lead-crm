@@ -4,6 +4,150 @@ Most recent session first.
 
 ---
 
+# SESSION 4 — Production Live-AI 404: Root Cause And Fix
+
+Session date: 2026-09-11
+Scope: live AI qualification failed in production with `AI provider request failed with status 404.`
+with `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1` and
+`AI_MODEL=openai/gpt-oss-20b:free`. Find and fix the actual integration bug, improve provider error
+diagnostics safely, and keep the provider-agnostic architecture and the lead-safety guarantees.
+
+---
+
+## Root cause
+
+The bug was **not** in the URL. It was the **model identifier**.
+
+`lib/ai/client.ts` built the request as `` `${baseUrl.replace(/\/$/, "")}/chat/completions` ``, which
+for the configured base URL resolves to:
+
+```
+https://openrouter.ai/api/v1/chat/completions
+```
+
+That is exactly OpenRouter's documented chat-completions endpoint. There was no doubled `/v1`, no
+missing `/chat/completions`, and no malformed join. The request path was correct.
+
+`openai/gpt-oss-20b:free` is simply **not a model OpenRouter serves**. Its live catalogue advertises
+`openai/gpt-oss-20b` and `openai/gpt-oss-120b` (plus `:batch` variants); the `:free` suffix is not
+used for those ids. For an unknown or endpoint-less model, OpenRouter responds:
+
+```
+HTTP 404
+{"error":{"message":"No endpoints found for <model>.","code":404}}
+```
+
+That 404 is indistinguishable from a wrong URL — and the client discarded the response body, so the
+failure read only as `status 404`. The earlier `openrouter/free` attempt did not 404 because
+`openrouter/free` *is* a real (free-pool router) model; it failed with a timeout instead, which is a
+different problem: free pools are slow, and the default serverless budget could abort the call before
+the 30s client timeout was reached.
+
+So the two reported symptoms had two distinct causes: a **timeout** (request budget too short for a
+free pool) and a **404** (invalid model id).
+
+## The fix
+
+**`lib/ai/client.ts` (rewritten)**
+
+| Area | Change |
+|---|---|
+| URL construction | `resolveChatCompletionsUrl()` appends `/chat/completions` exactly once, trims trailing slashes, tolerates a base URL that already ends with the endpoint, and rejects an empty base. Never appends a second `/v1`. |
+| Failure diagnostics | Non-2xx responses are parsed into sanitized details: HTTP status, model, endpoint host/path, and the provider's own `code` / `type` / `message`. The body is size-capped and truncated. |
+| Secret safety | `sanitizeProviderText()` redacts credential-shaped tokens and strips control characters; `describeProviderTarget()` drops the query string so a key cannot ride along in a URL. |
+| `response_format` | A 400/422 that explicitly rejects `response_format` triggers exactly one retry without it. The prompt already requires JSON-only output and the parser tolerates prose and code fences. |
+| Timeout | New optional `AI_TIMEOUT_MS` (default 30000 ms, clamped to 1000-120000) instead of a hard-coded 30s. |
+| Empty replies | The error now reports the provider's `finish_reason`, which distinguishes "truncated" from "model produced nothing". |
+
+A real production failure now reads, in the log and on the lead's activity timeline:
+
+```
+AI provider request failed with status 404. model=openai/gpt-oss-20b:free
+endpoint=openrouter.ai/api/v1/chat/completions providerCode=404
+providerMessage="No endpoints found for openai/gpt-oss-20b:free."
+hint=the model name may not exist on this provider, or AI_BASE_URL may not be the provider's API root
+```
+
+**Serverless budget.** `export const maxDuration = 60` was added to `app/c/[clinicSlug]/page.tsx`
+(public submission) and `app/(crm)/leads/[leadId]/page.tsx` (manual retry). Both run live AI inside a
+server action, and the default function budget is shorter than `AI_TIMEOUT_MS`, which would abort the
+call mid-flight and surface as a timeout regardless of the AI client's own timeout.
+
+**`scripts/verify-ai-provider.mts` (new, `npm run verify:ai`)**
+
+Three layers, none of which print a credential:
+
+1. **Offline** — URL-construction assertions, including the exact production value, trailing-slash
+   handling, and that no `/v1/v1` or doubled suffix can be produced.
+2. **Model list** — when `AI_MODE=live`, asks the provider's OpenAI-compatible `GET /models` whether
+   `AI_MODEL` exists, and prints the closest matches when it does not.
+3. **`--self-test`** — drives the real client against a loopback stub provider and asserts the exact
+   request path, `Authorization` header, body shape, 404 diagnostics, no-retry-on-404, the one
+   `response_format` fallback retry, and `finish_reason` reporting.
+
+Plus `--probe`, which performs one real completion. The script exits non-zero on failure so it can
+gate a deployment.
+
+**Unchanged invariants:** the lead is persisted before AI runs, an AI failure never deletes a lead,
+retry stays available, structured output is still Zod-validated, and no provider is hard-coded —
+`AI_MODE=mock` still works with no network access.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `npm run verify:ai` | PASS — 9/9 URL checks, 3/3 sanitisation checks; live checks SKIP locally because `AI_MODE=mock` |
+| `npm run verify:ai -- --self-test` | PASS — 15/15 against the loopback stub provider |
+| Real OpenRouter model list, `openai/gpt-oss-20b:free` | **FAIL** — not advertised (437 models checked); closest matches `openai/gpt-oss-20b`, `openai/gpt-oss-20b:batch` |
+| Real OpenRouter model list, `openai/gpt-oss-20b` | PASS — advertised |
+| `npx tsc --noEmit` | PASS |
+| `npm run lint` | PASS |
+| `npm run build` | PASS |
+| `npm run verify:e2e` | PASS — 30/30, full workflow still green after the client rewrite |
+
+The two real-provider rows above are the decisive evidence: they isolate the failure to the model id,
+not the URL.
+
+## Files touched
+
+| File | Change |
+|---|---|
+| `lib/ai/client.ts` | Rewritten: URL builder, sanitized provider diagnostics, `response_format` fallback, `AI_TIMEOUT_MS`, `finish_reason` reporting |
+| `lib/validation/env.ts` | `AI_TIMEOUT_MS` added; `AI_BASE_URL` must start with `http://` or `https://` |
+| `app/c/[clinicSlug]/page.tsx` | `maxDuration = 60` |
+| `app/(crm)/leads/[leadId]/page.tsx` | `maxDuration = 60` |
+| `scripts/verify-ai-provider.mts` | New provider diagnostic and loopback integration test |
+| `package.json` | `verify:ai` script |
+| `.env.example` | `AI_BASE_URL` semantics, `AI_MODEL` guidance, `AI_TIMEOUT_MS` placeholder |
+| `TASKS.md` | Session note 7, session 4 verification block, T-039 minimum-action addendum, session 4 remediation section |
+| `DECISIONS.md` | D-042 — Provider Requests Are Diagnosed, Not Guessed |
+| `README.md` | Verify-the-AI-provider section, live-AI URL/model rules, `AI_TIMEOUT_MS` |
+| `SESSION_REPORT.md` | This section |
+
+## Secrets
+
+`.env.local` was not modified. No real API key was used: the loopback self-test uses a
+loopback-only stub value that never leaves `127.0.0.1`, and the model-list checks only read
+OpenRouter's public `GET /models`. No credential, `DATABASE_URL` or `BETTER_AUTH_SECRET` value was
+printed at any point, and `.env.example` gained placeholders only.
+
+## Outstanding action — required before production live AI works
+
+This is a **Vercel environment change, not a code change**:
+
+1. In Vercel, set `AI_MODEL=openai/gpt-oss-20b` (the current `openai/gpt-oss-20b:free` is not a model
+   OpenRouter serves).
+2. Optionally set `AI_TIMEOUT_MS` if the default 30000 ms does not suit the plan.
+3. Leave `AI_BASE_URL=https://openrouter.ai/api/v1` exactly as it is — it is correct.
+4. Redeploy, then confirm the lead's activity timeline shows `AI_ANALYSIS_COMPLETED` instead of
+   `AI_ANALYSIS_FAILED`.
+
+Production live-AI verification is deliberately **not** marked complete: the code path is correct and
+verified against the provider's real model list, but the production environment still holds the
+invalid model id until that redeploy happens.
+
+---
+
 # SESSION 3 — Security Remediation: Public Seeded Demo Credential
 
 Session date: 2026-09-11

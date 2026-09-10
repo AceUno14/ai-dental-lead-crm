@@ -10,7 +10,10 @@ Current Task: None — every task is DONE except T-039, which is BLOCKED on user
 Last Completed Task: T-041 (End-to-End CRM Test). T-006, T-007 and T-040 were completed in the same
 session after `DATABASE_URL` became available. Session 3 was a security remediation rather than a
 queued task: the hard-coded demo credential was removed from source, the seed was made
-production-safe, and the live Neon credential was revoked.
+production-safe, and the live Neon credential was revoked. Session 4 was a production AI integration
+fix rather than a queued task: the live-mode HTTP 404 was diagnosed to an invalid `AI_MODEL` value,
+provider error diagnostics were added, and a provider diagnostic script (`npm run verify:ai`) was
+introduced. See the session 4 note at the end of this file.
 
 Blocked Tasks:
 
@@ -53,9 +56,25 @@ Last Verification (session 3 — demo credential revoked, all PASS):
 - Data integrity after revocation — 1 clinic, 9 leads (the submitted test lead is still present,
   status NEW), 4 notes, 32 activities, 1 membership, **0 credential accounts, 0 sessions**
 
+Last Verification (session 4 — production AI integration fix, all PASS):
+
+- `npm run verify:ai` — PASS (9/9 offline URL-construction checks + 3/3 sanitisation checks; live
+  checks SKIP because local `AI_MODE` is `mock`)
+- `npm run verify:ai -- --self-test` — PASS (15/15 against a loopback stub provider: exact request
+  path `/v1/chat/completions`, `Authorization` header, body shape, 404 diagnostics, no retry on 404,
+  one `response_format` fallback retry, empty-reply `finish_reason` reporting)
+- Real OpenRouter model-list check — `openai/gpt-oss-20b:free` FAILS (not advertised; 437 models
+  checked, closest matches `openai/gpt-oss-20b`, `openai/gpt-oss-20b:batch`); `openai/gpt-oss-20b`
+  PASSES. Confirms the production 404 was an invalid model id, not a URL bug.
+- `npx tsc --noEmit` — PASS (exit 0)
+- `npm run lint` — PASS (exit 0)
+- `npm run build` — PASS (production build, all routes compiled)
+- `npm run verify:e2e` — PASS (full core workflow still green after the AI client rewrite)
+
 Database state: `DATABASE_URL` is configured in `.env.local` (not printed or committed) and the
-schema is migrated and seeded. `AI_MODE=mock` remains the local default; live AI mode is still
-unverified and needs a real provider.
+schema is migrated and seeded. `AI_MODE=mock` remains the local default. Live AI still requires a
+deployment-time correction to `AI_MODEL` in Vercel (see the session 4 note at the end of this file);
+the runtime code path is now correct and verified against a real provider's model list.
 
 ---
 
@@ -114,6 +133,13 @@ Do not stop after one task.
    production unless `ALLOW_DEMO_SEED=true`, it never creates a credential in production, and
    `npm run security:revoke-demo-credential -- --apply` revokes a credential left behind by an older
    revision. Never add a demo or test password back into source, docs, or `.env.example`.
+7. **`AI_BASE_URL` is an API root, not an endpoint (session 4).** Set it to the provider root
+   *including* its version prefix (`https://openrouter.ai/api/v1`); the client appends
+   `/chat/completions` exactly once and never appends a second `/v1`. `AI_MODEL` must be an exact id
+   the provider currently serves — a wrong or retired id is reported as HTTP 404, which is easily
+   mistaken for a URL bug. Run `npm run verify:ai` (add `-- --self-test` and `-- --probe`) before
+   changing provider config or redeploying. See DECISIONS.md D-042 and the session 4 note at the end
+   of this file.
 
 ### Verify at first database contact
 
@@ -1633,6 +1659,13 @@ Create the Vercel project, add `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`, `BETTER_AU
 `BETTER_AUTH_URL`, `AI_MODE` (and `AI_BASE_URL`/`AI_API_KEY`/`AI_MODEL` if live AI is enabled) as
 environment variables, then deploy.
 
+Additional action required by the session 4 AI fix (Vercel environment change, not a code change):
+
+Set `AI_MODEL=openai/gpt-oss-20b` — the currently configured `openai/gpt-oss-20b:free` is not a model
+id OpenRouter serves, which is what produced the production 404. Optionally set `AI_TIMEOUT_MS`.
+Verify before redeploying with `AI_MODE=live npm run verify:ai`. See the session 4 note at the end of
+this file.
+
 ---
 
 # PHASE 10 — FINAL QA
@@ -1836,6 +1869,52 @@ external Vercel deployment (T-039); no code-level blocker remains. In session 2 
 blockers were cleared (T-006, T-007, T-040, T-041 all DONE), so this verification now also includes
 the real Neon database, the seeded data, the end-to-end workflow script, and an authenticated
 production smoke test.
+
+---
+
+# SESSION 4 — PRODUCTION LIVE-AI 404 REMEDIATION
+
+Not a queued task: a production defect reported after deployment.
+
+Symptom: with `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1` and
+`AI_MODEL=openai/gpt-oss-20b:free`, live qualification failed with
+`AI provider request failed with status 404.` An earlier attempt with a different free model failed
+with a provider timeout instead. Public submission, persistence, auth and tenant isolation were all
+unaffected, and the lead was never lost.
+
+Root cause: the **model id**, not the URL. `AI_BASE_URL` already resolved correctly to
+`https://openrouter.ai/api/v1/chat/completions` (OpenRouter's documented endpoint) — there was no
+doubled `/v1` and no missing `/chat/completions`. `openai/gpt-oss-20b:free` is simply not a model
+OpenRouter serves: its live catalogue advertises `openai/gpt-oss-20b` and `openai/gpt-oss-120b`
+(plus `:batch` variants) and the `:free` suffix is not used for those ids. OpenRouter reports
+"no endpoints found for <model>" as HTTP 404, which is indistinguishable from a bad URL unless the
+provider's own error body is read — and the old client discarded it.
+
+Fix (see DECISIONS.md D-042):
+
+1. `lib/ai/client.ts` rewritten:
+   - `resolveChatCompletionsUrl()` appends the suffix exactly once, trims trailing slashes, tolerates
+     a full endpoint as the base, and rejects an empty base.
+   - Non-2xx responses are turned into sanitized diagnostics: status, model, endpoint host/path, and
+     the provider's `code`/`type`/`message`, size-capped, with credential-shaped tokens redacted.
+   - `response_format` is retried once without it only when a 400/422 explicitly rejects it.
+   - `AI_TIMEOUT_MS` makes the request timeout configurable (default 30000 ms, clamped).
+   - Empty assistant replies now report `finish_reason`.
+2. `export const maxDuration = 60` on the public clinic page and the lead detail page, so the
+   serverless budget cannot abort a live provider call before `AI_TIMEOUT_MS` is reached.
+3. `npm run verify:ai` (`scripts/verify-ai-provider.mts`) added: offline URL assertions, provider
+   model-list check, `--probe` for a real completion, `--self-test` for a loopback stub round-trip.
+
+Unchanged invariants: the lead is persisted before AI runs, an AI failure never deletes a lead,
+retry stays available, and AI output is still Zod-validated.
+
+Verification: see the session 4 block under CURRENT EXECUTION. The decisive evidence is the real
+OpenRouter model-list check — `openai/gpt-oss-20b:free` FAILS (not advertised, closest matches
+`openai/gpt-oss-20b`, `openai/gpt-oss-20b:batch`) while `openai/gpt-oss-20b` PASSES.
+
+Outstanding action (Vercel environment change, not code): set `AI_MODEL=openai/gpt-oss-20b` in the
+production environment and redeploy. The runtime code path is correct and ready; production live-AI
+verification stays open until that redeploy happens and succeeds.
 
 ---
 

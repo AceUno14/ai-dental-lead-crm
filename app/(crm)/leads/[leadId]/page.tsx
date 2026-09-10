@@ -16,6 +16,11 @@ export const metadata: Metadata = {
   title: "Lead detail",
 };
 
+// The manual "retry AI analysis" server action runs a live provider call in
+// this segment. 60s is the maximum available on Vercel Hobby and stays above
+// the AI request timeout (AI_TIMEOUT_MS, default 30s).
+export const maxDuration = 60;
+
 function formatDateTime(value: Date): string {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",

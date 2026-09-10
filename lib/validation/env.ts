@@ -13,9 +13,20 @@ const serverEnvSchema = z.object({
   BETTER_AUTH_URL: z.string().url().optional(),
   NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
   AI_MODE: z.enum(["mock", "live"]).default("mock"),
-  AI_BASE_URL: z.string().url().optional(),
+  // The API root including the provider's version prefix, e.g.
+  // "https://openrouter.ai/api/v1". "http(s)://" is enforced so a malformed
+  // value cannot silently produce an unusable request URL.
+  AI_BASE_URL: z
+    .string()
+    .url()
+    .refine((value) => /^https?:\/\//i.test(value), {
+      message: "AI_BASE_URL must start with http:// or https://.",
+    })
+    .optional(),
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().optional(),
+  // Optional per-request timeout in milliseconds. Clamped by lib/ai/client.ts.
+  AI_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

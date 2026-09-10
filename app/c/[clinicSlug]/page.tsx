@@ -6,6 +6,15 @@ import { findPublicClinicBySlug } from "@/lib/services/clinics";
 
 type PageParams = Promise<{ clinicSlug: string }>;
 
+/**
+ * The public submission server action persists the lead and then runs live AI
+ * qualification in the same invocation. The default serverless budget is
+ * shorter than a live provider call, which would abort the request mid-flight
+ * and surface as a timeout. 60s is the maximum available on Vercel Hobby and
+ * stays above the AI request timeout (AI_TIMEOUT_MS, default 30s).
+ */
+export const maxDuration = 60;
+
 export async function generateMetadata({ params }: { params: PageParams }): Promise<Metadata> {
   const { clinicSlug } = await params;
   const clinic = await findPublicClinicBySlug(clinicSlug);

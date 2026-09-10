@@ -849,6 +849,65 @@ Consequences:
 
 ---
 
+# D-042 — Provider Requests Are Diagnosed, Not Guessed
+
+Status:
+
+ACCEPTED
+
+Context:
+
+Live AI qualification failed in production with "AI provider request failed with status 404" and the
+failure message contained no more information than that. The URL construction was in fact correct —
+`AI_BASE_URL=https://openrouter.ai/api/v1` resolved to `https://openrouter.ai/api/v1/chat/completions`,
+which is OpenRouter's documented endpoint — but the configured model id, `openai/gpt-oss-20b:free`,
+does not exist in OpenRouter's catalogue (only `openai/gpt-oss-20b` and `openai/gpt-oss-120b` exist;
+the `:free` suffix is not used for those models). OpenRouter reports "no endpoints found for <model>"
+as HTTP 404, which is indistinguishable from a bad URL unless the provider's own error is read.
+
+Decision:
+
+- `AI_BASE_URL` is the provider API root *including* its version prefix, and the client appends
+  `/chat/completions` exactly once. The builder is idempotent: trailing slashes are trimmed and the
+  suffix is not added twice, so a base URL that already ends with the endpoint cannot double the path.
+- The client never appends a second `/v1` and never constructs a provider-specific path.
+- Non-2xx responses are read into sanitized diagnostics: HTTP status, model, endpoint host and path,
+  and the provider's own `code`, `type` and `message`. The body is size-capped, credential-shaped
+  tokens are redacted, control characters are stripped and text is truncated before it is logged or
+  persisted.
+- Diagnostics never include the API key, `DATABASE_URL`, `BETTER_AUTH_SECRET` or lead content, and
+  provider target descriptions drop the query string so a credential cannot ride along in a URL.
+- A `400`/`422` that explicitly rejects `response_format` triggers exactly one retry without it; the
+  prompt already requires JSON-only output and the parser tolerates prose and code fences.
+- Request timeout is configurable through `AI_TIMEOUT_MS` (default 30000 ms, clamped 1000-120000), and
+  the AI-invoking route segments declare `maxDuration = 60` so the serverless platform budget cannot
+  abort a live provider call before the request timeout is reached.
+- `npm run verify:ai` is the provider diagnostic. It asserts URL construction offline, checks the
+  configured model against the provider's OpenAI-compatible `GET /models` list when live, can probe a
+  real completion with `--probe`, and drives the real client against a loopback stub provider with
+  `--self-test` (exact path, headers, body shape, 404 diagnostics, fallback and empty replies).
+
+Reason:
+
+A wrong model id and a wrong URL both surface as HTTP failures at request time. Without the provider's
+own error and the exact resolved endpoint, the two are indistinguishable, and the difference between
+them is a configuration change rather than a code change.
+
+Consequences:
+
+- Changing provider or model must be validated with `npm run verify:ai` before deploying; an invalid
+  model id is caught in seconds instead of after a redeploy.
+- The failure reason stored on `AI_ANALYSIS_FAILED` activity metadata is longer and more informative.
+  It carries no secrets and no lead content.
+- `AI_MODEL` must be an exact provider model id that the provider currently serves. The `:free` suffix
+  is provider- and model-specific and must not be assumed.
+- The lead-safety invariants are unchanged: a lead is persisted before AI runs, an AI failure never
+  deletes a lead, retry stays available, and structured output is still Zod-validated.
+- `maxDuration = 60` is the Vercel Hobby maximum. A plan with a longer limit may raise it, and
+  `AI_TIMEOUT_MS` must remain below it.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

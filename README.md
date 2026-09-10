@@ -370,6 +370,32 @@ isolation between clinics, and idempotent AI retry. It cleans up the records it 
 
 ---
 
+# VERIFY THE AI PROVIDER
+
+Before enabling live AI, or after changing provider configuration:
+
+npm run verify:ai
+
+That command runs offline URL-construction assertions (no credentials needed), then — when
+`AI_MODE=live` — asks the provider's model list whether `AI_MODEL` actually exists and reports the
+closest matches when it does not.
+
+Optional extras:
+
+npm run verify:ai -- --self-test
+
+Drives the real client against a loopback stub provider: exact request path, `Authorization` header,
+body shape, provider 404 diagnostics, the `response_format` fallback, and empty replies. Needs no
+provider account.
+
+npm run verify:ai -- --probe
+
+Performs one real chat completion against the configured provider.
+
+It exits non-zero when a check fails, so it can gate a deployment. It never prints `AI_API_KEY`.
+
+---
+
 # AUTHENTICATION
 
 Set:
@@ -423,6 +449,29 @@ AI_BASE_URL="https://provider.example/v1"
 AI_API_KEY="your-real-secret"
 
 AI_MODEL="provider-model-name"
+
+Optional timeout, in milliseconds:
+
+AI_TIMEOUT_MS="30000"
+
+AI_BASE_URL is the provider's API root **including** its version prefix. The application appends
+`/chat/completions` to it exactly once, so do not include that suffix yourself — a full endpoint
+pasted as the base is tolerated, and a second `/v1` is never appended.
+
+OpenRouter, for example:
+
+AI_BASE_URL="https://openrouter.ai/api/v1"
+
+AI_MODEL="openai/gpt-oss-20b"
+
+AI_MODEL must be an exact id that the provider currently serves. Providers report an unknown or
+retired model id as HTTP 404 with an error such as "No endpoints found for `<model>`", which looks
+like a URL problem but is not. Free-tier suffixes such as `:free` are model- and provider-specific
+and must not be assumed — check the provider's model list, or run `npm run verify:ai`.
+
+When a live request fails, the failure recorded on the lead's activity timeline includes the HTTP
+status, model, endpoint host and path, and the provider's own sanitized error code and message. It
+never includes the API key, `DATABASE_URL`, `BETTER_AUTH_SECRET`, or lead content.
 
 The exact values depend on the AI provider selected.
 
@@ -623,7 +672,12 @@ AI_API_KEY
 
 AI_MODEL
 
+AI_TIMEOUT_MS
+
 Production URLs should use the real Vercel domain rather than localhost.
+
+The public clinic page and the lead detail page declare `maxDuration = 60` because they run live AI
+qualification inside a server action. Keep `AI_TIMEOUT_MS` below that budget.
 
 ---
 
