@@ -1,0 +1,277 @@
+// AI Dental Lead CRM — database schema
+// Clinic is the tenant boundary. Every clinic-owned record carries clinicId.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --------------------------------------------
+// Enums
+// --------------------------------------------
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  STAFF
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  APPOINTMENT_SET
+  WON
+  LOST
+}
+
+enum LeadPriority {
+  HOT
+  WARM
+  COLD
+}
+
+enum LeadUrgency {
+  IMMEDIATE
+  TODAY
+  THIS_WEEK
+  FLEXIBLE
+  UNKNOWN
+}
+
+enum LeadIntent {
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
+}
+
+enum ServiceCategory {
+  EMERGENCY
+  GENERAL_DENTISTRY
+  CLEANING
+  COSMETIC
+  IMPLANTS
+  ORTHODONTICS
+  ROOT_CANAL
+  EXTRACTION
+  WHITENING
+  DENTURES
+  OTHER
+  UNKNOWN
+}
+
+enum ContactMethod {
+  EMAIL
+  PHONE
+  TEXT
+}
+
+enum ActivityType {
+  LEAD_CREATED
+  AI_ANALYSIS_STARTED
+  AI_ANALYSIS_COMPLETED
+  AI_ANALYSIS_FAILED
+  STATUS_CHANGED
+  NOTE_ADDED
+  CONTACT_ATTEMPTED
+  APPOINTMENT_SET
+  LEAD_WON
+  LEAD_LOST
+}
+
+// --------------------------------------------
+// Authentication (Better Auth)
+// --------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions Session[]
+  accounts Account[]
+
+  memberships  Membership[]
+  leadNotes    LeadNote[]
+  leadActivity LeadActivity[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// --------------------------------------------
+// CRM / multi-tenant models
+// --------------------------------------------
+
+model Clinic {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  leads       Lead[]
+  analyses    LeadAnalysis[]
+  notes       LeadNote[]
+  activities  LeadActivity[]
+
+  @@map("clinic")
+}
+
+model Membership {
+  id        String         @id @default(cuid())
+  userId    String
+  clinicId  String
+  role      MembershipRole @default(STAFF)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clinicId])
+  @@index([clinicId])
+  @@map("membership")
+}
+
+model Lead {
+  id                     String        @id @default(cuid())
+  clinicId               String
+  name                   String
+  email                  String
+  phone                  String
+  serviceInterest        String
+  preferredContactMethod ContactMethod @default(EMAIL)
+  submittedUrgency       LeadUrgency   @default(UNKNOWN)
+  message                String
+  consent                Boolean       @default(false)
+  status                 LeadStatus    @default(NEW)
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  clinic     Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  analysis   LeadAnalysis?
+  notes      LeadNote[]
+  activities LeadActivity[]
+
+  @@index([clinicId])
+  @@index([clinicId, createdAt])
+  @@index([clinicId, status])
+  @@map("lead")
+}
+
+model LeadAnalysis {
+  id                String          @id @default(cuid())
+  clinicId          String
+  leadId            String          @unique
+  leadScore         Int
+  priority          LeadPriority
+  urgency           LeadUrgency
+  intent            LeadIntent
+  serviceCategory   ServiceCategory
+  summary           String
+  recommendedAction String
+  draftReply        String
+  model             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId])
+  @@map("lead_analysis")
+}
+
+model LeadNote {
+  id           String   @id @default(cuid())
+  clinicId     String
+  leadId       String
+  authorUserId String
+  body         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorUserId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId])
+  @@index([leadId, createdAt])
+  @@map("lead_note")
+}
+
+model LeadActivity {
+  id String @id @default(cuid())
+
+  clinicId    String
+  leadId      String
+  actorUserId String?
+  type        ActivityType
+  description String
+  metadata    Json?
+  createdAt   DateTime     @default(now())
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([clinicId])
+  @@index([leadId, createdAt])
+  @@map("lead_activity")
+}

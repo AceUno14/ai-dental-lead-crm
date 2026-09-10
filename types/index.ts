@@ -1,0 +1,36 @@
+export {
+  ActivityType,
+  ContactMethod,
+  LeadIntent,
+  LeadPriority,
+  LeadStatus,
+  LeadUrgency,
+  MembershipRole,
+  ServiceCategory,
+} from "@/lib/generated/prisma/enums";
+
+export type DashboardMetrics = {
+  totalLeads: number;
+  newLeads: number;
+  hotLeads: number;
+  appointmentsSet: number;
+};
+
+export type LeadListFilters = {
+  status?: string;
+  priority?: string;
+  search?: string;
+};
+
+export type ActionState = {
+  status: "idle" | "success" | "error";
+  message?: string;
+  fieldErrors?: Record<string, string[]>;
+  /**
+   * Values echoed back after a failed submission so a form can be re-rendered
+   * with the input the user already provided. Never used for authorization.
+   */
+  values?: Record<string, string>;
+};
+
+export const initialActionState: ActionState = { status: "idle" };
