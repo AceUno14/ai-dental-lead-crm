@@ -908,6 +908,55 @@ Consequences:
 
 ---
 
+# D-043 — OpenRouter Free Router Is The Initial Production Runtime Model
+
+Status:
+
+ACCEPTED
+
+Context:
+
+After the session 4 fix, production live AI was unblocked by pointing `AI_MODEL` at a model the
+provider actually serves. The value chosen for production is `openrouter/free` — OpenRouter's
+free-model router — rather than a specific `openai/gpt-oss-*` id. An earlier attempt with
+`openrouter/free` had failed with a timeout, which was a request-budget problem rather than an invalid
+model, and it was fixed by raising the timeout and declaring a longer serverless budget.
+
+Decision:
+
+- The initial production runtime model is OpenRouter's free-model router:
+  `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1`, `AI_MODEL=openrouter/free`.
+- Production sets `AI_TIMEOUT_MS=50000`. The request timeout must always stay below the
+  `maxDuration = 60` declared on the AI-invoking route segments (`/c/[clinicSlug]` for public
+  submission and `/leads/[leadId]` for manual retry).
+- `openrouter/free` is a router id, not a `:free` model suffix. It dispatches across OpenRouter's
+  free-pool models, so latency varies and the model recorded on a `LeadAnalysis` is the configured
+  router id rather than the specific upstream model that served the request.
+- This is an initial, cost-controlled strategy, not a permanent commitment. It is a configuration
+  choice: moving to a specific paid or self-hosted model means changing `AI_MODEL` (and optionally
+  `AI_TIMEOUT_MS`) and re-running `npm run verify:ai`, with no application code changes.
+- The provider-agnostic boundary stays intact: `lib/ai/client.ts` remains the only module that knows
+  the provider shape, and nothing outside it hard-codes OpenRouter.
+
+Reason:
+
+Free routers keep the portfolio deployment running with no API spend, and `openrouter/free` is an id
+OpenRouter actually serves — which is precisely what the session 4 failure was about. The
+architecture already treats the runtime model as configuration, so a cost-controlled default does not
+compromise the provider-agnostic design.
+
+Consequences:
+
+- Free-pool models can be slow and are rate limited, so a production lead may occasionally fail
+  qualification and need a manual retry from the lead detail page. This is safe by design: the lead is
+  always persisted before AI runs, and a failed analysis never deletes it.
+- A failure is recorded on the lead's activity timeline as `AI_ANALYSIS_FAILED` with sanitized
+  diagnostics (status, model, endpoint host/path, provider error) and no secrets or lead content.
+- Choosing a faster or higher-quality model later is an environment-variable change plus
+  `npm run verify:ai`, not an application change.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

@@ -2,30 +2,36 @@
 
 ## CURRENT EXECUTION
 
-Current Phase: Phase 9 — Deployment. All local phases are complete and verified against the real
-Neon database. Only the actual Vercel deployment (T-039) remains.
+Current Phase: MVP COMPLETE — deployed to Vercel against the production Neon database, with live AI
+qualification verified on a real production lead.
 
-Current Task: None — every task is DONE except T-039, which is BLOCKED on user Vercel access.
+Current Task: None — every task in this queue is DONE.
 
-Last Completed Task: T-041 (End-to-End CRM Test). T-006, T-007 and T-040 were completed in the same
-session after `DATABASE_URL` became available. Session 3 was a security remediation rather than a
+Last Completed Task: T-039 (Deploy to Vercel), completed in session 5 once the production environment
+was configured. Previously: T-041 (End-to-End CRM Test), T-006, T-007 and T-040 were completed in
+session 2 after `DATABASE_URL` became available. Session 3 was a security remediation rather than a
 queued task: the hard-coded demo credential was removed from source, the seed was made
 production-safe, and the live Neon credential was revoked. Session 4 was a production AI integration
 fix rather than a queued task: the live-mode HTTP 404 was diagnosed to an invalid `AI_MODEL` value,
 provider error diagnostics were added, and a provider diagnostic script (`npm run verify:ai`) was
-introduced. See the session 4 note at the end of this file.
+introduced. Session 5 confirmed the deployment and the live-AI path in production. See the session 5
+note at the end of this file.
 
-Blocked Tasks:
+Blocked Tasks: None. T-039 was blocked in sessions 1-4 on Vercel account access and production
+environment values; the user supplied those and the deployment succeeded.
 
-- T-039 — Vercel deployment requires user Vercel account access and the production environment
-  variables. Nothing else in the project is blocked.
+Next Eligible Task: None. The TASKS.md queue is exhausted; see `# WHEN MVP IS COMPLETE` at the end of
+this file before adding new scope. Do not invent Phase 11.
 
-Minimum user action to unblock T-039: create/authorize the Vercel project, then set `DATABASE_URL`
-(production Neon branch), `NEXT_PUBLIC_APP_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `AI_MODE`
-(plus `AI_BASE_URL`/`AI_API_KEY`/`AI_MODEL` only if live AI is enabled) and deploy.
+Last Verification (session 5 — production deployment and live AI, PASS):
 
-Next Eligible Task: T-039 (blocked). No other TODO items remain in this queue; see
-`# WHEN MVP IS COMPLETE` at the end of this file before adding new scope.
+- Production deployment (Vercel) is live and loads.
+- Production AI configuration: `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1`,
+  `AI_MODEL=openrouter/free`, `AI_TIMEOUT_MS=50000`.
+- Live AI qualification verified in production: the existing lead "Live AI Test 2" was analysed after
+  redeployment and returned lead score 90/100, priority HOT, urgency IMMEDIATE, intent HIGH, service
+  EMERGENCY, with a generated summary, recommended action and draft reply. The activity timeline shows
+  `AI_ANALYSIS_COMPLETED` and the recorded model is `openrouter/free`.
 
 Last Verification (session 2 — all PASS):
 
@@ -72,9 +78,9 @@ Last Verification (session 4 — production AI integration fix, all PASS):
 - `npm run verify:e2e` — PASS (full core workflow still green after the AI client rewrite)
 
 Database state: `DATABASE_URL` is configured in `.env.local` (not printed or committed) and the
-schema is migrated and seeded. `AI_MODE=mock` remains the local default. Live AI still requires a
-deployment-time correction to `AI_MODEL` in Vercel (see the session 4 note at the end of this file);
-the runtime code path is now correct and verified against a real provider's model list.
+schema is migrated and seeded. `AI_MODE=mock` remains the local default. Production runs
+`AI_MODE=live` against OpenRouter and has been verified end-to-end (see the session 5 block above and
+the session 5 note at the end of this file).
 
 ---
 
@@ -140,6 +146,13 @@ Do not stop after one task.
    mistaken for a URL bug. Run `npm run verify:ai` (add `-- --self-test` and `-- --probe`) before
    changing provider config or redeploying. See DECISIONS.md D-042 and the session 4 note at the end
    of this file.
+8. **Production runs OpenRouter's free-model router (session 5).** The verified production values are
+   `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1`, `AI_MODEL=openrouter/free` and
+   `AI_TIMEOUT_MS=50000`. `openrouter/free` is a real *router* id (it is not a `:free` model suffix),
+   so it is a valid `AI_MODEL`; it dispatches across free-pool models, which can be slow, hence the
+   longer request timeout. `AI_TIMEOUT_MS` must stay below the `maxDuration = 60` budget declared on
+   the AI-invoking route segments. See DECISIONS.md D-043 and the session 5 note at the end of this
+   file.
 
 ### Verify at first database contact
 
@@ -153,8 +166,9 @@ be exercised without a reachable database. Check these in order once `DATABASE_U
    out). `better-auth@1.7.4` was configured against the adapter without a live round-trip test.
 4. A public submission creates the lead and then the mock analysis (`/c/bright-smile-dental`).
 5. Status change, note, and AI retry each append the expected timeline entries.
-6. `AI_MODE=live` remains unverified — it additionally needs `AI_BASE_URL`, `AI_API_KEY`, and
-   `AI_MODEL` from a real provider and must fail safely when any of them is missing.
+6. `AI_MODE=live` is verified in production (session 5) with `AI_BASE_URL=https://openrouter.ai/api/v1`
+   and `AI_MODEL=openrouter/free`. It still needs `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` from a
+   real provider and must fail safely when any of them is missing — which the local checks confirm.
 
 ---
 
@@ -1625,7 +1639,7 @@ Remaining steps are environment values and the actual deploy (T-039).
 
 ## T-039 — Deploy to Vercel
 
-Status: BLOCKED
+Status: DONE
 
 Dependencies:
 
@@ -1640,7 +1654,8 @@ Acceptance Criteria:
 - deployment succeeds
 - live URL loads
 
-If authorization is unavailable:
+If authorization is unavailable (this was the session 1-4 situation; no longer applicable, because the
+task is DONE):
 
 Mark BLOCKED.
 
@@ -1648,23 +1663,32 @@ Do not fabricate credentials.
 
 Continue with independent QA tasks.
 
-Blocker:
+Blocker (sessions 1-4 — now resolved):
 
-No Vercel account access, no production database, and no production secrets are available in this
-session. Nothing was fabricated.
+No Vercel account access, no production database, and no production secrets were available in those
+sessions. Nothing was fabricated.
 
-Minimum user action:
+Minimum user action (supplied by the user before session 5):
 
 Create the Vercel project, add `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`, `BETTER_AUTH_SECRET`,
 `BETTER_AUTH_URL`, `AI_MODE` (and `AI_BASE_URL`/`AI_API_KEY`/`AI_MODEL` if live AI is enabled) as
 environment variables, then deploy.
 
-Additional action required by the session 4 AI fix (Vercel environment change, not a code change):
+Verification (session 5 — PASS):
 
-Set `AI_MODEL=openai/gpt-oss-20b` — the currently configured `openai/gpt-oss-20b:free` is not a model
-id OpenRouter serves, which is what produced the production 404. Optionally set `AI_TIMEOUT_MS`.
-Verify before redeploying with `AI_MODE=live npm run verify:ai`. See the session 4 note at the end of
-this file.
+- The production Vercel deployment is live and its URL loads; it runs against the production Neon
+database with authentication, tenant isolation and the public lead form all working.
+- Production AI configuration: `AI_MODE=live`, `AI_BASE_URL=https://openrouter.ai/api/v1`,
+  `AI_MODEL=openrouter/free`, `AI_TIMEOUT_MS=50000`.
+- Live AI qualification was verified on a real production lead: the existing lead "Live AI Test 2"
+  was analysed after redeployment and returned score 90/100, priority HOT, urgency IMMEDIATE, intent
+  HIGH, service EMERGENCY, plus a generated summary, recommended action and draft reply. Its activity
+  timeline shows `AI_ANALYSIS_COMPLETED` and the recorded model is `openrouter/free`.
+
+The model id chosen in production resolves the session 4 remedy ("point `AI_MODEL` at a model the
+provider actually serves") while keeping the provider-agnostic architecture: OpenRouter's free-model
+router was used instead of a specific `openai/gpt-oss-*` id. See DECISIONS.md D-043 and the session 5
+note at the end of this file.
 
 ---
 
@@ -1912,25 +1936,67 @@ Verification: see the session 4 block under CURRENT EXECUTION. The decisive evid
 OpenRouter model-list check — `openai/gpt-oss-20b:free` FAILS (not advertised, closest matches
 `openai/gpt-oss-20b`, `openai/gpt-oss-20b:batch`) while `openai/gpt-oss-20b` PASSES.
 
-Outstanding action (Vercel environment change, not code): set `AI_MODEL=openai/gpt-oss-20b` in the
-production environment and redeploy. The runtime code path is correct and ready; production live-AI
-verification stays open until that redeploy happens and succeeds.
+Outstanding action (Vercel environment change, not code): **resolved in session 5.** Rather than
+switching to `openai/gpt-oss-20b`, the production environment was pointed at OpenRouter's free-model
+router with `AI_MODEL=openrouter/free` and `AI_TIMEOUT_MS=50000`, and live AI qualification was then
+confirmed working on a real production lead. See the `# SESSION 5` section below and DECISIONS.md
+D-043.
+
+---
+
+# SESSION 5 — PRODUCTION DEPLOYMENT AND LIVE-AI VERIFICATION
+
+Not a queued task beyond T-039: the final deployment and production verification pass.
+
+Outcome: T-039 is DONE. The application is deployed on Vercel against the production Neon database,
+and live AI qualification has been verified end-to-end in production.
+
+Production runtime configuration (verified):
+
+```
+AI_MODE=live
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_MODEL=openrouter/free
+AI_TIMEOUT_MS=50000
+```
+
+What was verified in production:
+
+- The deployed URL loads; public lead submission, Neon persistence, authentication and tenant
+  isolation all work.
+- Live AI qualification succeeds: the existing lead "Live AI Test 2" was analysed after redeployment
+  and returned lead score **90/100**, priority **HOT**, urgency **IMMEDIATE**, intent **HIGH**, service
+  **EMERGENCY**, together with a generated summary, recommended action and draft reply.
+- The lead's activity timeline shows `AI_ANALYSIS_COMPLETED`, and the model recorded on the analysis is
+  `openrouter/free`.
+
+Why this closes session 4: the session 4 diagnosis was that `openai/gpt-oss-20b:free` was not a model
+OpenRouter serves. Production now uses `openrouter/free` — a real OpenRouter *router* id (distinct
+from a `:free` model suffix) that dispatches across free-pool models. Because free pools are slow,
+`AI_TIMEOUT_MS` is raised to 50000 ms, which stays below the `maxDuration = 60` budget declared on
+the AI-invoking route segments. The provider-agnostic architecture is unchanged: nothing in the
+application is hard-coded to OpenRouter, and `AI_MODE=mock` still works locally with no network.
+
+Lead-safety invariants remain unchanged and are visible in production: the lead is persisted before
+AI runs, an AI failure never deletes a lead, retry stays available, and AI output is Zod-validated
+before persistence.
+
+Open items: none in the TASKS.md queue. Known residue from session 3 (the old demo credential still
+existing in git history, though inert) is unchanged and still requires a history rewrite to remove.
 
 ---
 
 # WHEN MVP IS COMPLETE
 
-Update:
-
-Current Phase: MVP Complete (local) — Phase 9 deployment still outstanding
+Current Phase: MVP COMPLETE — deployed and verified in production
 
 Current Task: None
 
-Last Completed Task: T-041 (T-043 re-confirmed)
+Last Completed Task: T-039 (Deploy to Vercel)
 
-Blocked Tasks: T-039 — Vercel deployment needs user Vercel access and production environment values
+Blocked Tasks: None
 
-Next Eligible Task: T-039 (blocked). Do not open new scope until it is resolved.
+Next Eligible Task: None. Do not open new scope until the user requests it.
 
 Last Verification:
 
@@ -1946,6 +2012,11 @@ npm run db:seed — PASS
 
 npx tsx scripts/verify-e2e.mts — PASS (30/30)
 
+npm run verify:ai — PASS (offline URL checks + loopback self-test)
+
 next start route QA (anonymous + authenticated) — PASS
+
+Production (Vercel, `AI_MODE=live`) — PASS (lead "Live AI Test 2" analysed: 90/100, HOT,
+IMMEDIATE, EMERGENCY, `AI_ANALYSIS_COMPLETED`, model `openrouter/free`)
 
 Do not automatically invent Phase 11.

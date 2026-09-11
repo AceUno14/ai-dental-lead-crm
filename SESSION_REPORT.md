@@ -4,6 +4,91 @@ Most recent session first.
 
 ---
 
+# SESSION 5 — Production Deployment And Live-AI Verification
+
+Session date: 2026-09-11
+Scope: final documentation/status pass after the Vercel deployment and the production live-AI
+qualification were confirmed by the user. No application code was changed in this session.
+
+---
+
+## Outcome
+
+The MVP is complete and running in production:
+
+- **T-039 — Deploy to Vercel: DONE.** The deployment is live against the production Neon database
+  with authentication, clinic tenancy and the public lead form all working.
+- **Live AI qualification: VERIFIED IN PRODUCTION.** Session 4's open item is closed.
+
+## Production runtime configuration
+
+| Variable | Value |
+| --- | --- |
+| `AI_MODE` | `live` |
+| `AI_BASE_URL` | `https://openrouter.ai/api/v1` |
+| `AI_MODEL` | `openrouter/free` |
+| `AI_TIMEOUT_MS` | `50000` |
+
+## What was verified
+
+The existing lead **"Live AI Test 2"** was analysed after redeployment and returned:
+
+| Field | Value |
+| --- | --- |
+| Lead score | **90/100** |
+| Priority | **HOT** |
+| Urgency | **IMMEDIATE** |
+| Intent | **HIGH** |
+| Service | **EMERGENCY** |
+| Summary | Generated |
+| Recommended action | Generated |
+| Draft reply | Generated |
+| Activity timeline | `AI_ANALYSIS_COMPLETED` |
+| Model recorded | `openrouter/free` |
+
+## Why this closes session 4
+
+Session 4 diagnosed the production 404 to an invalid model id — `openai/gpt-oss-20b:free` is not a
+model OpenRouter serves — rather than a URL bug, and prescribed pointing `AI_MODEL` at an id the
+provider actually serves. Production now uses `openrouter/free`, a real OpenRouter **router** id
+(distinct from a `:free` model suffix) that dispatches across free-pool models.
+
+That also explains the earlier timeout: free pools are slow, so `AI_TIMEOUT_MS` is raised to 50000 ms,
+which stays below the `maxDuration = 60` budget added in session 4 to the AI-invoking route segments.
+The session 4 fixes (sanitized diagnostics plus a longer serverless budget) combined with this
+configuration close the defect.
+
+## Invariants unchanged
+
+The lead is persisted before AI runs, an AI failure never deletes a lead, retry stays available, AI
+output is Zod-validated before persistence, and no provider is hard-coded — `AI_MODE=mock` still works
+locally with no network access.
+
+## Files touched
+
+| File | Change |
+| --- | --- |
+| `TASKS.md` | T-039 marked DONE; CURRENT EXECUTION moved to MVP COMPLETE; session 5 note added |
+| `DECISIONS.md` | D-043 added — OpenRouter free router is the initial production runtime model |
+| `README.md` | Production AI configuration section added with the verified values |
+| `SESSION_REPORT.md` | This session 5 entry; session 4's open item marked resolved |
+
+Documentation only — no application code was modified, and nothing was committed or pushed.
+
+## Secrets
+
+No secret values appear in this report or in any tracked file. Production secrets live only in the
+Vercel environment variables; `.env.local` was not modified and no credential, `DATABASE_URL` or
+`BETTER_AUTH_SECRET` value was printed.
+
+## Open items
+
+None in the TASKS.md queue. The session 3 residue is unchanged: the old demo password literal still
+exists in git history (inert, because the live credential was revoked) and removing it would require a
+history rewrite.
+
+---
+
 # SESSION 4 — Production Live-AI 404: Root Cause And Fix
 
 Session date: 2026-09-11
@@ -131,9 +216,11 @@ loopback-only stub value that never leaves `127.0.0.1`, and the model-list check
 OpenRouter's public `GET /models`. No credential, `DATABASE_URL` or `BETTER_AUTH_SECRET` value was
 printed at any point, and `.env.example` gained placeholders only.
 
-## Outstanding action — required before production live AI works
+## Outstanding action — RESOLVED IN SESSION 5
 
-This is a **Vercel environment change, not a code change**:
+This is a **Vercel environment change, not a code change**. It is kept here as a record of what
+session 4 recommended; **do not follow it as-is** — session 5 took a different, verified route (see
+the closing note below and the session 5 entry):
 
 1. In Vercel, set `AI_MODEL=openai/gpt-oss-20b` (the current `openai/gpt-oss-20b:free` is not a model
    OpenRouter serves).
@@ -142,9 +229,10 @@ This is a **Vercel environment change, not a code change**:
 4. Redeploy, then confirm the lead's activity timeline shows `AI_ANALYSIS_COMPLETED` instead of
    `AI_ANALYSIS_FAILED`.
 
-Production live-AI verification is deliberately **not** marked complete: the code path is correct and
-verified against the provider's real model list, but the production environment still holds the
-invalid model id until that redeploy happens.
+Production live-AI verification was deliberately left open in this session; it was completed in
+session 5. Production was pointed at OpenRouter's free-model router (`AI_MODEL=openrouter/free`,
+`AI_TIMEOUT_MS=50000`) rather than `openai/gpt-oss-20b`, and live qualification then succeeded on a
+real production lead. See the session 5 entry at the top of this file and DECISIONS.md D-043.
 
 ---
 
@@ -399,11 +487,11 @@ ignored via the `.env*` rule in `.gitignore`. No credentials were fabricated.
 
 ---
 
-## Remaining blocker (still open after session 3 — session 3 added no new tasks)
+## Remaining blocker (recorded in session 2 — since resolved in session 5)
 
 | Task | Status | Minimum action |
 | --- | --- | --- |
-| **T-039 — Deploy to Vercel** | BLOCKED | Create/authorize the Vercel project, set `DATABASE_URL` (production Neon branch), `NEXT_PUBLIC_APP_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `AI_MODE` (plus `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` only if live AI is enabled), then deploy |
+| **T-039 — Deploy to Vercel** | DONE (session 5) | — |
 
 Everything else in the TASKS.md queue is DONE. `AI_MODE=mock` remains the local default; live AI mode
-is still unverified and needs a real provider.
+was verified in production in session 5.

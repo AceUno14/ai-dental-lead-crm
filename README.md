@@ -458,16 +458,32 @@ AI_BASE_URL is the provider's API root **including** its version prefix. The app
 `/chat/completions` to it exactly once, so do not include that suffix yourself — a full endpoint
 pasted as the base is tolerated, and a second `/v1` is never appended.
 
-OpenRouter, for example:
-
-AI_BASE_URL="https://openrouter.ai/api/v1"
-
-AI_MODEL="openai/gpt-oss-20b"
-
 AI_MODEL must be an exact id that the provider currently serves. Providers report an unknown or
 retired model id as HTTP 404 with an error such as "No endpoints found for `<model>`", which looks
 like a URL problem but is not. Free-tier suffixes such as `:free` are model- and provider-specific
 and must not be assumed — check the provider's model list, or run `npm run verify:ai`.
+
+## Production AI Configuration (Verified)
+
+The deployed application uses OpenRouter's free-model router:
+
+AI_MODE="live"
+
+AI_BASE_URL="https://openrouter.ai/api/v1"
+
+AI_MODEL="openrouter/free"
+
+AI_TIMEOUT_MS="50000"
+
+`openrouter/free` is a router id that dispatches across OpenRouter's free-pool models — it is not a
+`:free` model suffix. Free pools are slower and rate limited, so the request timeout is raised; if a
+qualification attempt fails, the lead can be retried from its detail page, and the lead itself is
+never affected. `AI_TIMEOUT_MS` must stay below the `maxDuration = 60` budget declared on the
+AI-invoking routes. The strategy and its trade-offs are recorded in DECISIONS.md D-043.
+
+Switching to another OpenAI-compatible provider, or to a specific model, is a configuration change
+only: set `AI_BASE_URL` to that provider's API root (including its version prefix) and `AI_MODEL` to
+an exact id it serves, then run `npm run verify:ai` before deploying.
 
 When a live request fails, the failure recorded on the lead's activity timeline includes the HTTP
 status, model, endpoint host and path, and the provider's own sanitized error code and message. It
