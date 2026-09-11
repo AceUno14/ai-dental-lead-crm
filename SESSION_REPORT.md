@@ -4,6 +4,141 @@ Most recent session first.
 
 ---
 
+# SESSION 6 — Final Release Audit
+
+Session date: 2026-09-11
+Scope: independent verification that the repository, architecture, database integration, AI
+integration, security controls, documentation, Git state and production behaviour are consistent and
+release-ready. No feature work, no refactors, no code changes.
+
+---
+
+## Outcome
+
+**FINAL RELEASE AUDIT: PASS.** Every check passed with **zero files changed** and a clean working
+tree. No secret was printed and no destructive or production-mutating operation was performed.
+
+## Repository and Git
+
+| Check | Result |
+| --- | --- |
+| Branch | `main` |
+| Working tree | **Clean** (`git status` empty) |
+| `HEAD` | `c3ef8db32f7f935bb0f05ada2d587036d12b7a2c` |
+| `origin/main` | `c3ef8db32f7f935bb0f05ada2d587036d12b7a2c` (in sync; ahead/behind `0 0`) |
+| Remote | `origin https://github.com/AceUno14/ai-dental-lead-crm.git` |
+| Nested git repos | None — exactly one `.git` at the project root |
+| Tracked files | 82 — no `node_modules/`, `.next/`, `lib/generated/` or `.env.local`; only `.env.example` tracked among `.env*` |
+| `git log --all -S "demo-password-123"` | **No matching commits** (literal absent from reachable history) |
+| Credential-pattern scan of tracked files | Only the `.env.example` `postgresql://USER:PASSWORD@HOST/DATABASE` placeholder |
+
+## Quality
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | **PASS** (exit 0) |
+| `npm run lint` | **PASS** (exit 0) |
+| `npm run build` | **PASS** — Next.js 16.3.4, 8 routes compiled |
+
+## Database
+
+| Check | Result |
+| --- | --- |
+| `npx prisma format` | PASS |
+| `npx prisma validate` | PASS — schema is valid |
+| `npx prisma generate` | PASS — client 7.10.0 → `lib/generated/prisma` |
+| `npx prisma migrate status` | PASS — 1 migration, **database schema is up to date** (Neon `neondb`) |
+
+`db:migrate` was **not** run and nothing was seeded — only the non-destructive status read. Schema
+review confirmed 10 models, 8 enums, `clinicId` on every clinic-owned table with cascade delete,
+`LeadAnalysis.leadId @unique`, and the architecture indexes.
+
+## Automated QA
+
+| Check | Result |
+| --- | --- |
+| `npm run verify:e2e` | **PASS — 30/30** (public creation → AI persistence → CRM visibility → tenant isolation → status → note → timeline → idempotent retry) |
+| `npm run verify:ai` | **PASS** — 9/9 URL-construction + 3/3 sanitisation (live checks SKIP; local `AI_MODE=mock`, not changed) |
+| `npm run verify:ai -- --self-test` | **PASS — 15/15** against a loopback stub provider |
+
+The e2e script's `finally` cleanup was independently confirmed: **0 leftover e2e users and 0 leftover
+e2e leads** in the database.
+
+## AI provider
+
+Confirmed by the offline and loopback checks: `AI_BASE_URL` root resolves to exactly
+`/v1/chat/completions` with no `/v1/v1` duplication and no doubled suffix; provider diagnostics stay
+sanitised (status, model, endpoint host/path, provider code/message; credentials redacted); the
+`response_format` fallback retries exactly once; `AI_TIMEOUT_MS` validation and `maxDuration = 60`
+budget are intact; AI output remains Zod-validated; mock mode needs no network; and OpenRouter is not
+hard-coded anywhere outside `lib/ai/client.ts`.
+
+## Production smoke test
+
+`https://ai-dental-lead-crm.vercel.app` — no production record created, no source credential used:
+
+| URL | Status |
+| --- | --- |
+| `/` | 200 |
+| `/login` | 200 |
+| `/signup` | 200 |
+| `/c/smileworks-dental` | 200 |
+| `/c/bright-smile-dental` | 200 |
+| `/c/this-clinic-does-not-exist-xyz` | 404 (expected not-found) |
+| `/dashboard` | 307 → `/login` |
+| `/leads` | 307 → `/login` |
+
+Live-AI production success remains evidenced by the session 5 verification (lead "Live AI Test 2":
+90/100, HOT, IMMEDIATE, EMERGENCY, `AI_ANALYSIS_COMPLETED`, model `openrouter/free`).
+
+## Security
+
+- `.env.local` is git-ignored; `.env.example` is tracked with placeholders only.
+- A read-only database snapshot confirmed the **demo user has 0 credential accounts** — the publicly
+exposed credential stays revoked.
+- The revocation script remains **dry-run by default** (`--apply` required) and revokes sessions as
+  well as the credential.
+- Production seed protections are intact: refuses when `NODE_ENV`/`VERCEL_ENV=production` unless
+  `ALLOW_DEMO_SEED=true`, guard runs before any database connection, never creates a credential in
+  production.
+- Authenticated routes stay protected (307), tenant isolation is enforced server-side, and an AI
+  failure records `AI_ANALYSIS_FAILED` without ever deleting the lead.
+
+## Documentation consistency
+
+`TASKS.md` (T-039 DONE, MVP COMPLETE, no blocked or next tasks), `README.md` (stack + verified
+`AI_MODEL=openrouter/free`, `AI_TIMEOUT_MS=50000`), `ARCHITECTURE.md` (provider-agnostic AI, clinic
+`clinicId` boundary), `DECISIONS.md` (D-041/D-042/D-043) and this report were all found consistent
+with the code. No documentation edit was required.
+
+## Issues found
+
+1. **Inert history residue (non-blocking):** the old demo password literal remains in earlier commits
+   of the public repository. It is harmless — the live credential is revoked (verified 0 credential
+   accounts) and the seed cannot recreate it — but purging it needs a history rewrite + force push,
+   which this audit was told not to do.
+2. **Data-state observation (non-blocking):** the seeded demo clinic's owner membership has no
+   credential, so the demo clinic cannot be signed into. That is the intended secure default from
+   session 3, not a defect.
+
+## Files touched
+
+**NONE.** All checks passed, so no file was changed. One temporary read-only audit script was created
+and deleted; the final `git status` is empty.
+
+## Secrets
+
+`.env.local` was not modified and no secret value was printed. No credential was fabricated. `HEAD`
+was not committed, pushed, or deployed, and no Vercel environment variable was changed.
+
+## Final status
+
+Ready for **portfolio presentation**, **job applications**, and **client demonstrations**. The only
+caveat for demos is that free-pool AI can be slow and may occasionally need a manual retry — safe by
+design, because the lead is persisted before AI runs and is never deleted.
+
+---
+
 # SESSION 5 — Production Deployment And Live-AI Verification
 
 Session date: 2026-09-11
