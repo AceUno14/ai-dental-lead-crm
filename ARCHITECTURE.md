@@ -20,13 +20,21 @@ Public Dental Lead Form
 
 → PostgreSQL
 
-→ Create Lead
+→ Create Lead  (persistence ALWAYS happens first)
 
 → AI Qualification
 
 → Validate Structured AI Output
 
-→ Save LeadAnalysis
+→ Save LeadAnalysis (dental qualification fields)
+
+→ Scoring: 1-100 + HOT/WARM/COLD
+
+→ Recommended Action
+
+→ Follow-up Task (AI-recommended, idempotent)
+
+→ Email Alert (HOT / IMMEDIATE, best-effort)
 
 → Protected CRM
 
@@ -35,6 +43,14 @@ Public Dental Lead Form
 → Follow-up
 
 → Appointment / Won / Lost
+
+FAILURE ISOLATION (mandatory invariants):
+
+- Lead persistence NEVER depends on AI, tasks, or email succeeding.
+- AI failure: lead remains, AI_ANALYSIS_FAILED recorded, staff can retry.
+- Follow-up task failure: lead AND analysis remain, failure logged.
+- Email failure: lead, analysis and task all remain, EMAIL_ALERT_FAILED recorded.
+- Nothing is ever sent to a patient automatically.
 
 ---
 
@@ -429,6 +445,89 @@ APPOINTMENT_SET
 LEAD_WON
 
 LEAD_LOST
+
+FOLLOW_UP_CREATED
+
+FOLLOW_UP_COMPLETED
+
+EMAIL_ALERT_SENT
+
+EMAIL_ALERT_FAILED
+
+---
+
+## FollowUpTask
+
+A concrete, mutable staff follow-up attached to one lead (activities are an immutable log; tasks
+are work state).
+
+Fields:
+
+id
+
+clinicId  (tenant boundary)
+
+leadId
+
+title
+
+description
+
+dueAt
+
+status  (OPEN / COMPLETED / CANCELLED)
+
+priority  (FollowUpPriority)
+
+source  (AI / STAFF / SYSTEM)
+
+createdById
+
+completedAt
+
+createdAt / updatedAt
+
+Indexes: (clinicId, status, dueAt), (leadId, status).
+
+Relations: two named foreign keys on leadId — follow_up_task_lead_fkey → lead and
+follow_up_task_analysis_fkey → lead_analysis (explicit map names prevent a constraint-name
+collision; see DECISIONS.md D-045).
+
+AI behavior: one OPEN AI-sourced task per lead, upserted idempotently on every analysis run.
+Completed AI tasks are never resurrected. Staff control completion/cancel/reopen through
+clinic-scoped server actions. See DECISIONS.md D-045.
+
+---
+
+# EMAIL ALERT LAYER
+
+Provider abstraction in lib/email/email.ts (mock | live via EMAIL_MODE, Resend in live mode).
+lib/services/lead-alerts.ts fires an alert when a lead is HOT or its follow-up priority is
+IMMEDIATE. Alerts carry operational CRM data only. Every failure path resolves without throwing
+and is recorded as EMAIL_ALERT_FAILED; with no ALERT_RECIPIENT_EMAIL the alert is skipped.
+See DECISIONS.md D-046.
+
+---
+
+# LEAD ANALYSIS — DENTAL QUALIFICATION FIELDS
+
+In addition to leadScore, priority, urgency, intent and serviceCategory, LeadAnalysis stores:
+
+treatmentValuePotential  (LOW/MEDIUM/HIGH/PREMIUM/UNKNOWN — business value band, never a price)
+
+painNeedLevel  (HIGH/MEDIUM/LOW/UNKNOWN — strength of the stated need, not a diagnosis)
+
+insuranceStatus  (HAS_INSURANCE/NO_INSURANCE/UNKNOWN)
+
+paymentReadiness  (READY/NEEDS_OPTIONS/PRICE_SENSITIVE/UNKNOWN)
+
+followUpPriority  (IMMEDIATE/HIGH/NORMAL/LOW)
+
+recommendedFollowUpMinutes  (5-4320; drives the follow-up task dueAt)
+
+Scoring weights and bands live in lib/ai/scoring.ts (DECISIONS.md D-044): urgency 25,
+appointment intent 20, treatment value 20, pain/need 15, payment readiness 10,
+responsiveness 10; HOT ≥ 80, WARM ≥ 50, COLD < 50; score clamped 1-100.
 
 ---
 

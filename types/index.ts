@@ -1,12 +1,19 @@
 export {
   ActivityType,
   ContactMethod,
+  FollowUpPriority,
+  FollowUpTaskSource,
+  FollowUpTaskStatus,
+  InsuranceStatus,
   LeadIntent,
   LeadPriority,
   LeadStatus,
   LeadUrgency,
   MembershipRole,
+  PainNeedLevel,
+  PaymentReadiness,
   ServiceCategory,
+  TreatmentValuePotential,
 } from "@/lib/generated/prisma/enums";
 
 export type DashboardMetrics = {
@@ -14,6 +21,7 @@ export type DashboardMetrics = {
   newLeads: number;
   hotLeads: number;
   appointmentsSet: number;
+  followUpsDue: number;
 };
 
 export type LeadListFilters = {
@@ -34,3 +42,5 @@ export type ActionState = {
 };
 
 export const initialActionState: ActionState = { status: "idle" };
+
+export const updateFollowUpTaskSchemaValues = ["COMPLETED", "OPEN", "CANCELLED"] as const;

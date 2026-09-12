@@ -4,6 +4,419 @@ Most recent session first.
 
 ---
 
+# SESSION 12 — FULL VERIFICATION LOOP ON DEVELOPMENT: ALL GREEN
+
+Date: 2026-09-13 · Scope: run the complete verification suite against the DEVELOPMENT Neon branch,
+fix every failure, repeat until green · STATUS: **ALL CHECKS PASS — 1 real defect found and fixed.
+Production untouched. No commit/push/deploy.**
+
+## The one failure found, and its root cause
+
+`npm run verify:email` failed at section 3 with:
+
+```
+Email verification errored: DATABASE_URL is not configured.
+```
+
+**Root cause (pre-existing, not an assertion problem).** `scripts/verify-email-alerts.mts` was the
+**only** verification script that never loaded the project environment — `db-identity.mts`,
+`remove-demo-credential.mts`, `verify-ai-provider.mts` and `verify-e2e.mts` all call
+`loadEnv({ path: ".env.local" })` + `loadEnv({ path: ".env" })`; this one did not. Section 3
+dynamically imports `@/lib/services/lead-alerts`, whose import chain constructs the Prisma client via
+`lib/db/prisma.ts`, and that module throws at load time when `DATABASE_URL` is missing — even though
+no email check touches the database.
+
+It previously appeared to pass only because a `DATABASE_URL` happened to be **ambient** in the shell,
+which is the same inherited-variable hazard recorded in session 11 (dotenv does not override an
+already-set variable).
+
+**Fix:** added the same two `loadEnv` calls at the start of `main()`, with a comment explaining why a
+service import needs the variable. No assertion was changed, skipped or weakened — the full suite now
+runs and passes unconditionally (16 checks, all sections).
+
+## Final results
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | **PASS** (exit 0) |
+| `npm run lint` | **PASS** (exit 0, 0 problems) |
+| `npm run build` | **PASS** — compiled, TypeScript finished, 8/8 static pages, 9 routes |
+| `npm run verify:email` | **PASS** — all 6 sections (16 checks): mock send, recipient/sender config, HOT/IMMEDIATE decisioning + COLD/LOW skip, content safety, loopback Resend shape, 422 failure isolation |
+| `npm run verify:ai` | **PASS** — 9 URL + 3 sanitisation + 1 model-suggestion; live checks SKIP under `AI_MODE=mock` |
+| `npm run verify:ai -- --self-test` | **PASS** — 15/15 against the loopback stub provider |
+| `npm run verify:e2e` | **PASS — 59 checks, 0 failures** |
+| `npx tsx scripts/db-identity.mts e2e` | **PASS** — `inherited before loading: NO`, DB fingerprint `24ea81a95814` |
+
+`verify:e2e` passed every section: public creation → AI persistence → dental qualification fields →
+CRM visibility → staff view → tenant isolation → status/note → timeline → idempotent retry → AI
+follow-up task idempotency → staff completion + no-resurrect → email alert decisioning → follow-up
+workflow timeline + `followUpsDue` metric.
+
+## Database identity during the run
+
+Every command was run with `DATABASE_URL` **unset**, so `.env.local` is authoritative:
+
+```
+DATABASE_URL inherited before loading: NO
+.env.local fingerprint: 24ea81a95814
+DB FINGERPRINT:        24ea81a95814
+follow_up_task_analysis_fkey: FOREIGN KEY ("leadId") REFERENCES lead_analysis("leadId") ON UPDATE CASCADE ON DELETE CASCADE
+follow_up_task_lead_fkey:     FOREIGN KEY ("leadId") REFERENCES lead(id)                ON UPDATE CASCADE ON DELETE CASCADE
+```
+
+## Correction to older notes
+
+Sessions 9-10 reported `verify:e2e` 59/59 PASS **and** "the live FK was verified correct via
+pg_catalog" on the development connection. Session 11 proved the second claim false for this
+endpoint: the applied constraint still referenced `lead_analysis(id)` until the corrective migration
+`20260913120000_fix_followup_analysis_fk` was applied. Those results can therefore not be reproduced
+on this endpoint as they were recorded — most likely they were taken against a different Neon
+endpoint. Session 12 is the first **59/59 PASS on the identity-verified development database**, and
+the FK state is asserted alongside it above.
+
+## Not run (deliberately)
+
+- `npm run db:seed` — it replaces the demo clinic, which would delete existing development data;
+  the e2e suite creates and cleans up its own records and needs no seed.
+- `verify:ai` live provider checks — `AI_MODE=mock` locally (acceptable, unchanged).
+- Production migration — production remains untouched and un-migrated for the two new migrations.
+
+## Files changed
+
+| File | Change |
+| --- | --- |
+| `scripts/verify-email-alerts.mts` | Added the missing `loadEnv({ path: ".env.local" })` / `loadEnv({ path: ".env" })` calls at the start of `main()` |
+| `SESSION_REPORT.md` | This entry |
+
+No application code, schema, migration, validation, scoring, AI, transaction, follow-up or frontend
+file was modified. `prisma/schema.prisma`, `prisma/migrations/` and `.env.local` are untouched.
+
+## Secrets
+
+No secret value was printed — only SHA-256 fingerprint prefixes. `.env.local` was not modified.
+Nothing was committed, pushed or deployed.
+
+---
+
+# SESSION 11 — FORWARD-ONLY CORRECTIVE FK MIGRATION (DEVELOPMENT ONLY)
+
+Date: 2026-09-13 · Scope: repoint `follow_up_task_analysis_fkey` at `lead_analysis("leadId")`
+using a NEW forward-only migration, applied to the development Neon branch only · STATUS: **FK
+CORRECTED AND PROVEN ON DEVELOPMENT. Production untouched. No commit/push/deploy.**
+
+## Root cause
+
+Sessions 9-10 corrected the content of `20260913000000_dental_conversion_workflow/migration.sql`,
+but on the current development endpoint the *live* constraint was still the wrong one:
+
+```
+follow_up_task_analysis_fkey: FOREIGN KEY ("leadId") REFERENCES lead_analysis(id)   <-- WRONG
+follow_up_task_lead_fkey:     FOREIGN KEY ("leadId") REFERENCES lead(id)            <-- correct
+```
+
+`follow_up_task.leadId` stores the **Lead** id, so the analysis relation must target
+`lead_analysis."leadId"` (its `@unique` join key) — never `lead_analysis."id"`. Against `id`, the
+constraint is unsatisfiable by any row, which is what produced the original P2003 on seed.
+
+Because that migration was already recorded as applied, editing it was not an option — the
+session-10 "one-line diff" to `migration.sql` (which now contains the correct SQL) never changed the
+already-applied constraint on this endpoint. A **new forward-only migration** was therefore required;
+migration history was not rewritten and no checksum was changed again.
+
+## The migration
+
+| Item | Value |
+| --- | --- |
+| Path | `prisma/migrations/20260913120000_fix_followup_analysis_fk/migration.sql` |
+| Statements | exactly **2** — one `DROP CONSTRAINT`, one `ADD CONSTRAINT` |
+| Applied with | `npx prisma migrate deploy` (forward-only; no reset, no re-baseline, no diff-generated extras) |
+
+```sql
+ALTER TABLE "follow_up_task" DROP CONSTRAINT "follow_up_task_analysis_fkey";
+
+ALTER TABLE "follow_up_task" ADD CONSTRAINT "follow_up_task_analysis_fkey"
+  FOREIGN KEY ("leadId") REFERENCES "lead_analysis"("leadId")
+  ON DELETE CASCADE ON UPDATE CASCADE;
+```
+
+Pre-flight checks (all read-only), run **before** applying:
+
+- The SQL file was inspected: grep confirmed exactly one DROP and one ADD and no other DDL
+  (no table, column, enum, index or data statement).
+- `lead_analysis_leadId_key` is a **UNIQUE** index on `lead_analysis("leadId")` (from
+  `20260911000000_init`) — Postgres requires a unique target for the FK.
+- `follow_up_task` held **0 rows**, so no existing row could block the new constraint.
+
+## Result
+
+```
+follow_up_task_analysis_fkey: FOREIGN KEY ("leadId") REFERENCES lead_analysis("leadId") ON UPDATE CASCADE ON DELETE CASCADE
+follow_up_task_lead_fkey:     FOREIGN KEY ("leadId") REFERENCES lead(id)                ON UPDATE CASCADE ON DELETE CASCADE
+```
+
+Migration history is intact: `20260913000000_dental_conversion_workflow` still records
+`finished_at = 2026-09-12T17:37:11.031Z`; only the new migration was added.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `npx prisma migrate status` | **PASS** — 3 migrations, "Database schema is up to date!" |
+| `npx prisma validate` | **PASS** |
+| `npx prisma generate` | **PASS** — client 7.10.0 |
+| `npm run lint` | **PASS** — 0 errors, 0 warnings |
+| `npx tsc --noEmit` | **FAIL — pre-existing, unrelated to this migration** |
+| `npm run build` | **FAIL — same pre-existing errors** |
+| `npm run verify:e2e` | **NOT RUN** — user instruction; the human runs it manually |
+
+The typecheck errors are three, all in files this session did not touch, and a `.sql` file cannot
+cause them (`tsconfig.json` includes only `**/*.ts`, `**/*.tsx`, `**/*.mts`; `prisma/migrations` is
+never compiled). Both files pre-date this session:
+
+```
+lib/services/follow-up-tasks.ts(52,29) TS2339  'findUnique' does not exist on Pick<PrismaClient, "lead">
+lib/services/follow-up-tasks.ts(53,37) TS2339  'findUnique' does not exist on Pick<PrismaClient, "leadAnalysis">
+scripts/db-identity.mts(25,16)          TS5097  import path may only end with '.ts' unless allowImportingTsExtensions is enabled
+```
+
+`next build` compiles successfully (`✓ Compiled successfully`) and fails only at its TypeScript
+step. Fixing them would mean editing follow-up service logic and the diagnostic script, which this
+session was explicitly told not to do — so they are recorded here rather than silently patched.
+
+## Environment note — the inherited `DATABASE_URL` trap is still live
+
+`prisma.config.ts` loads `.env.local` via dotenv, which does **not** override an already-set env var.
+A shell holding an inherited `DATABASE_URL` therefore silently overrides `.env.local`:
+
+| Source | Fingerprint |
+| --- | --- |
+| Inherited in this shell | `46bfa2c59fb1` |
+| `.env.local` (development) | `24ea81a95814` |
+
+The first probe run picked up the inherited value. Every command after that — `migrate status`,
+`migrate deploy`, `generate`, and all metadata queries — ran with `DATABASE_URL` **unset** and was
+verified to hit `24ea81a95814` via `scripts/db-identity.mts`.
+
+Disclosure: one **read-only** metadata query (`SELECT`s over `pg_constraint`, `pg_indexes` and
+`_prisma_migrations`, plus row counts) was run against `46bfa2c59fb1` before this was caught. No
+write, DDL or migration was applied to it; that endpoint's constraint already read
+`lead_analysis("leadId")`. The human should clear the inherited `DATABASE_URL` at the OS/user level —
+the earlier PowerShell fix only covers that one shell.
+
+## Files touched
+
+| File | Change |
+| --- | --- |
+| `prisma/migrations/20260913120000_fix_followup_analysis_fk/migration.sql` | **New** — drops and recreates `follow_up_task_analysis_fkey` against `lead_analysis("leadId")`, preserving `ON UPDATE CASCADE` / `ON DELETE CASCADE` |
+
+Nothing else was written. `prisma/schema.prisma` was already correct (`references: [leadId]` with
+`map: "follow_up_task_analysis_fkey"`) and was not edited. No business logic, scoring, AI,
+transaction handling, email logic, follow-up service logic, tests, frontend or configuration changed.
+
+## Still outstanding
+
+- Production still needs both migrations applied deliberately via `npx prisma migrate deploy`.
+  Production has **not** been touched and no Vercel environment variable was changed.
+- The three pre-existing TS errors block `tsc --noEmit` and `next build` for the whole project and
+  need a scoped fix in a future session.
+- `verify:e2e` remains the human's manual step.
+
+## Secrets
+
+No secret value was printed — only SHA-256 fingerprint prefixes are shown. `.env.local` was not
+modified. Nothing was committed, pushed or deployed.
+
+---
+
+# SESSIONS 9-10 — MIGRATION APPLIED TO DEV, SEED FIX, E2E GREEN
+
+Date: 2026-09-13 · STATUS: **FULL WORKFLOW VERIFIED on the development Neon branch (PATH A).**
+
+## What happened
+
+1. The user applied the dental conversion migration to a development Neon branch and the seed failed
+   with P2003 on `follow_up_task_analysis_fkey`.
+2. ROOT CAUSE (schema, not seed order): Prisma had generated that FK as
+   `FOREIGN KEY (leadId) REFERENCES lead_analysis(id)` — the analysis primary key — while
+   `follow_up_task.leadId` stores the LEAD id. The constraint was unsatisfiable by any row.
+   Fix: reference `lead_analysis.leadId` (which is `@unique`). migration.sql regenerated — one-line
+   diff. D-045 corrected. NOTE: the user's original migrate/seed ran against a different Neon
+   endpoint than the one later in .env.local; on the current dev endpoint the corrected migration
+   was pending and was applied with `prisma migrate deploy`.
+   **CORRECTION (session 11):** on that dev endpoint the applied constraint was in fact still
+   `REFERENCES lead_analysis(id)` — editing the already-applied migration did not change it. The FK
+   was only truly corrected by the new forward-only migration
+   `20260913120000_fix_followup_analysis_fk`. See SESSION 11 above.
+3. Seed then passed (repeatable, 8 leads, 5 AI tasks, orphan check 0).
+4. First runtime `verify:e2e` reported 8 failures with P2003 (stale endpoint artifact). On the
+   current dev connection the live FK was verified correct via pg_catalog and e2e no longer showed
+   any FK failure — 2 independent root-cause failures remained:
+   a. `runLeadAnalysis` upsert: the dental fields were added to the `update:` branch only; the
+      `create:` branch (first analysis of a new lead) persisted schema defaults
+      (`followUpPriority=NORMAL`), contradicting the analyzer result. Fixed by adding all six
+      dental fields to `create:`.
+   b. Alert subject said "Urgent …" for non-HOT leads, so it never named the actual priority.
+      Fixed: subject is now `${priority} dental lead — …` for every priority (WARM leads can alert
+      when follow-up priority is IMMEDIATE).
+5. Final verification: tsc PASS, lint PASS, build PASS, prisma validate PASS, migrate status "up to
+   date", `verify:e2e` **59/59 PASS** including the FK/task/completion/idempotency sections and the
+   emergency severity + alert subject checks. No tests weakened.
+
+## Still outstanding
+
+- Production still needs the (corrected) migration applied deliberately via `npx prisma migrate
+  deploy` — production has NOT been touched.
+- Uncommitted work spans sessions 7-10; commit is the user's call.
+
+---
+
+# SESSION 8 — DENTAL CONVERSION WORKFLOW VERIFICATION & PRE-MIGRATION QA
+
+Date: 2026-09-13 · Scope: verify Session 7 work, complete all non-database verification, DC-013
+security audit, documentation · STATUS: **PARTIAL — everything not requiring the migration is DONE
+and PASSING; DC-014 runtime QA remains BLOCKED on the migration decision.**
+
+## Session 7 state found on arrival
+
+Working tree intact: 21 modified files + 7 new paths (verified via `git status` before any
+changes; no reset/stash/checkout used). All Session 7 features present as reported.
+
+## Verification results (this session)
+
+| Check | Result |
+| --- | --- |
+| `npx prisma format` / `validate` / `generate` | PASS (Prisma 7.10.0, client regenerated) |
+| FollowUpTask schema audit | PASS — clinicId present; indexes (clinicId, status, dueAt) + (leadId, status); cascade lead/clinic/analysis + SetNull createdBy; dual named FKs (`follow_up_task_lead_fkey`, `follow_up_task_analysis_fkey`) intact and required |
+| Migration ↔ schema parity | PASS — `prisma migrate diff` from the HEAD (pre-Session-7) schema to the current schema reproduces the committed `migration.sql` byte-identically; self-diff of the current schema is empty |
+| `npx tsc --noEmit` | PASS |
+| `npm run lint` | PASS (0 errors, 0 warnings) |
+| `npm run build` | PASS (compiled 2.5s after cache; all 9 routes; static pages 8/8) |
+| `npm run verify:email` | PASS 17/17 (mock send; safe live-config failure; recipient config; HOT/IMMEDIATE decisioning + COLD skip; content safety; loopback Resend path/auth/payload; 422 failure isolation) |
+| `npm run verify:ai` | PASS (9 URL + 3 sanitisation + 2 model-list suggestions; live checks SKIP under AI_MODE=mock — unchanged, not weakened) |
+| `npm run verify:ai -- --self-test` | PASS 15/15 (loopback stub: exact path, auth header, body, response_format fallback, 404 diagnostics, no-retry-on-404, empty-reply finish_reason) |
+| Offline scoring/schema checks | PASS 23/23 (weights sum 100; 1–100 clamp — all-UNKNOWN scores 3 not 0; HOT≥80/WARM≥50/COLD bands; timing table EMERGENCY→5min/IMMEDIATE→10/TODAY+HIGH→15/FLEXIBLE→1440/UNKNOWN→2880; uninsured+READY within 1pt of insured+READY (75 vs 76); expanded Zod contract validates and rejects 0/101 scores, 0 minutes, invalid urgency; mock output schema-valid for emergency/cosmetic/insurance samples; emergency case HOT+IMMEDIATE) |
+| `verify:e2e` / `db:seed` / `migrate` | **NOT RUN — forbidden** against the production DATABASE_URL |
+
+## Issue discovered and fixed
+
+**`upsertAiFollowUpTask` resurrect bug (real defect, fixed).** The docstring and the e2e assertion
+("completed AI task is not resurrected or duplicated: count === 1") promised that a COMPLETED AI
+task is never followed by a duplicate, but the code only special-cased OPEN and fell through to
+`create()` for COMPLETED — a post-completion analysis retry would have created a second AI task.
+Fix: return the existing COMPLETED task untouched. Smallest possible correction; no unrelated
+changes.
+
+## DC-013 tenant isolation
+
+STATIC TENANT AUDIT: **PASS**. Every new path resolves clinic server-side:
+
+- `updateFollowUpTaskAction` → `requireClinicContext()`; clinic never read from the browser.
+- `setFollowUpTaskStatus` → `findFirst({ id, leadId, clinicId })`; guessed task IDs from another
+  clinic return "Follow-up task not found." — update happens only on the found id.
+- `listLeadFollowUpTasks` (`where { clinicId, leadId }`), `listClinicFollowUps`
+  (`where { clinicId, status: OPEN }`), dashboard `followUpsDue` count (clinicId) — all scoped.
+- Lead-detail tasks load through `getClinicLeadDetail`, already clinic-scoped.
+- `upsertAiFollowUpTask` writes/queries with the caller's clinicId; the alert path takes clinicId
+  from the lead row itself and records activities with that clinicId.
+- No client component imports database code; alert content carries the lead's own fields only.
+- Documented limitation: `ALERT_RECIPIENT_EMAIL` is a single global mailbox (single-clinic
+  deployment). Per-clinic routing = future work (D-046).
+
+RUNTIME TENANT TEST: **BLOCKED** — the new table does not exist on the connected database yet.
+
+## Documentation updated this session
+
+- DECISIONS.md: D-044 (shared scoring model), D-045 (FollowUpTask design + named FK collision +
+  idempotency + no-resurrect), D-046 (email abstraction + failure isolation + global-recipient
+  limitation).
+- ARCHITECTURE.md: system flow extended (scoring → follow-up task → email alert → human review),
+  failure-isolation invariants, FollowUpTask model section, email alert layer section, dental
+  qualification fields + scoring weights.
+- AI_CONTEXT.md: core workflow with tasks/alerts + failure invariants, expanded AI structured
+  output (all dental fields + 1–100), follow-up task section, email env vars, 4 new activity types.
+- README.md: migration requirement before verify:e2e/seed, verify:email section, email alert
+  configuration + follow-up task behavior. `.env.example` needed no further change.
+- TASKS.md: CURRENT EXECUTION rewritten with session 8 results; DC-013 DONE (static) with runtime
+  test recorded BLOCKED; DC-014 BLOCKED with the two authorization paths.
+
+## Remaining blocker
+
+Migration `20260913000000_dental_conversion_workflow` is NOT applied; `.env.local` points at the
+PRODUCTION Neon database. PATH A (recommended): dev/branch DATABASE_URL → `npm run db:migrate` →
+`npm run db:seed` → `npm run verify:e2e` → fix → later `npx prisma migrate deploy` to production.
+PATH B: explicitly authorize `npx prisma migrate deploy` against production (additive; no seed).
+
+Exact next action: **provide a development/branch DATABASE_URL (PATH A) or authorize production
+`migrate deploy` (PATH B), then run `npm run db:migrate` + `npm run db:seed` + `npm run verify:e2e`.**
+
+No secrets printed, no credentials invented, `.env.local` untouched, no commits/pushes/deploys.
+
+---
+
+# SESSION 7 — DENTAL CONVERSION WORKFLOW (Post-MVP Phase 11, IN PROGRESS)
+
+Date: 2026-09-13 · Scope: DC-001 … DC-014 (dental conversion workflow layer) · STATUS: **PARTIAL — implementation ~95% complete; migration NOT applied; do not lose this state.**
+
+## What was implemented (all code is in the working tree, uncommitted)
+
+| Area | Change |
+| --- | --- |
+| `prisma/schema.prisma` | New enums: `TreatmentValuePotential`, `PainNeedLevel`, `InsuranceStatus`, `PaymentReadiness`, `FollowUpPriority`, `FollowUpTaskStatus`, `FollowUpTaskSource`. `LeadUrgency` += `EMERGENCY`, `SOON`. `ServiceCategory` += `CROWNS`, `VENEERS`. `ActivityType` += `FOLLOW_UP_CREATED`, `FOLLOW_UP_COMPLETED`, `EMAIL_ALERT_SENT`, `EMAIL_ALERT_FAILED`. `LeadAnalysis` += 6 defaulted columns (`treatmentValuePotential`, `painNeedLevel`, `insuranceStatus`, `paymentReadiness`, `followUpPriority`, `recommendedFollowUpMinutes`) + index. New `FollowUpTask` model (clinic-scoped, `dueAt`, `status`, `priority`, `source`, `createdById`, `completedAt`). NOTE: FollowUpTask has TWO FKs on `leadId` (→ lead and → lead_analysis) using named relations `follow_up_task_lead_fkey` / `follow_up_task_analysis_fkey` — Prisma rejects duplicate constraint names, do not remove the `map:` args. |
+| `prisma/migrations/20260913000000_dental_conversion_workflow/migration.sql` | Generated offline via `prisma migrate diff --from-schema <old> --to-schema <new> --script` (Prisma 7 flags are `--from-schema`/`--to-schema`, NOT `--from-schema-datamodel`). Purely additive. **NOT APPLIED — see blocker.** |
+| `lib/ai/scoring.ts` (NEW) | Shared scoring model, single source of truth: weights urgency 25 / appointment intent 20 / treatment value 20 / pain-need 15 / payment readiness 10 / responsiveness 10; bands HOT≥80, WARM≥50; `followUpTiming()` (EMERGENCY→5 min IMMEDIATE, IMMEDIATE→10, TODAY+HIGH→15, TODAY→60, HIGH intent→120, THIS_WEEK/SOON→240, FLEXIBLE→1440, UNKNOWN→2880); `scoreDentalLead()` clamps to 1–100. |
+| `lib/ai/schema.ts` | AI contract expanded with all dental fields; `leadScore` min is now **1** (spec: 1–100). Includes CROWNS/VENEERS. |
+| `lib/ai/prompt.ts` | System prompt rewritten: field definitions, scoring guide (imports weights from scoring.ts), timing guide, JSON contract, safety boundaries. |
+| `lib/ai/mock.ts` | Rewritten on `scoreDentalLead()`: emergency/intent/finance/price keyword derivation for urgency, intent, painNeedLevel, insuranceStatus, paymentReadiness; treatment value map per service category. |
+| `lib/services/follow-up-tasks.ts` (NEW) | `upsertAiFollowUpTask()` — idempotent: refreshes the single OPEN AI task (new dueAt/priority/description); never resurrects a COMPLETED one; records FOLLOW_UP_CREATED. `setFollowUpTaskStatus()` — staff completion (FOLLOW_UP_COMPLETED activity, transactional, clinic-scoped). `listLeadFollowUpTasks()`, `listClinicFollowUps()`. |
+| `lib/services/lead-analysis.ts` | Persists the 6 new analysis fields, then creates/refreshes the AI follow-up task inside a try/catch — task failure never fails the analysis. |
+| `lib/email/email.ts` (NEW) | Provider abstraction: `EMAIL_MODE=mock` (no network, fake id) / `live` (Resend REST). `sendEmail()` never throws — returns typed result. Missing `RESEND_API_KEY` in live mode → safe `EmailConfigurationError`. |
+| `lib/services/lead-alerts.ts` (NEW) | `shouldSendLeadAlert()` = priority HOT **or** followUpPriority IMMEDIATE. `buildLeadAlertEmail()` — operational content only (patient name, priority, score, treatment, urgency, action, CRM link, AI-review disclaimer; no enquiry body). `sendLeadAlertIfNeeded()` records EMAIL_ALERT_SENT/FAILED; no `ALERT_RECIPIENT_EMAIL` → skipped silently; never throws. |
+| `app/c/[clinicSlug]/actions.ts` | Flow is now: lead persisted → AI analysis → best-effort alert. All failure-isolated; visitor still gets success confirmation. |
+| `lib/services/leads.ts` | `getClinicLeadDetail` includes `tasks`; `getDashboardData` adds `followUpsDue` (OPEN tasks with `dueAt <= now`) and returns `now`. |
+| `app/(crm)/leads/actions.ts`, `lib/validation/lead-actions.ts` | New `updateFollowUpTaskAction` + `updateFollowUpTaskSchema` (COMPLETED/OPEN/CANCELLED). |
+| `components/leads/follow-up-task-card.tsx` (NEW) | Task rows with Mark completed / Cancel / Re-open; AI tasks labelled "AI-generated · review"; overdue highlight. |
+| `components/leads/ai-analysis-panel.tsx` | Qualification grid (treatment interest, value, urgency, pain/need, appointment intent, insurance, payment readiness, model) + follow-up priority and respond-within window. |
+| `components/leads/activity-timeline.tsx` | Labels/tones for the 4 new activity types. |
+| `app/(crm)/dashboard/page.tsx` | 5 metric cards (added Follow-ups due), "Open follow-ups" list (overdue tinted red, due-soonest first), recent leads show urgency. |
+| `prisma/seed.ts` | Seeds new analysis fields + AI follow-up tasks and FOLLOW_UP_CREATED activities for NEW/CONTACTED leads. |
+| `types/index.ts`, `lib/validation/env.ts`, `.env.example`, `package.json` | New enum re-exports; `EMAIL_MODE`/`RESEND_API_KEY`/`ALERT_FROM_EMAIL`/`ALERT_RECIPIENT_EMAIL` validated; email block documented (no real values); `verify:email` script added. |
+| `scripts/verify-e2e.mts` | New sections: 2b dental fields, 9 AI-task idempotency, 10 staff completion + no-resurrect, 11 alert decisioning/content, 12 timeline + followUpsDue. |
+| `scripts/verify-email-alerts.mts` (NEW) | Offline email verification: mock send, config errors, decisioning, content, loopback Resend stub (path/auth/payload), 422 failure isolation. |
+
+## Verification state (honest, this session)
+
+- `npx tsc --noEmit` — **PASS** (exit 0)
+- `npm run lint` — **PASS** (0 errors, 0 warnings; react-hooks/purity fix: no `Date.now()` during render — dashboard now uses `now` returned from `getDashboardData`)
+- `npm run build` — **NOT RUN this session** (time)
+- `npm run verify:ai` / `--self-test` — **NOT RUN this session**
+- `npm run verify:email` — **NOT RUN this session**
+- `npm run verify:e2e`, `npm run db:seed` — **BLOCKED until the migration is applied** (new table/columns don't exist in the DB yet)
+
+## BLOCKER — the one thing to resolve first
+
+`DATABASE_URL` in `.env.local` points at the **production Neon database** (verified reachable, 2 clinics, contains real deployed data). The new migration has **not** been applied. Next session must ask the user which to do:
+
+1. **Recommended:** point `DATABASE_URL` at a dev/branch database, run `npm run db:migrate` + `npm run db:seed` + `npm run verify:e2e` there; then apply `20260913000000_dental_conversion_workflow` to production deliberately (`npx prisma migrate deploy`), or
+2. Explicitly authorize running the migration against the production URL in `.env.local`.
+
+Do not run `db:migrate`/`db:seed`/`verify:e2e` unasked against the production URL.
+
+## Ordered next steps for the next session
+
+1. `npm run build` → fix any errors.
+2. `npm run verify:email`, `npm run verify:ai`, `npm run verify:ai -- --self-test`.
+3. Resolve the migration blocker (above) with the user.
+4. `npm run db:seed` + `npm run verify:e2e` (expect all sections incl. 2b/9/10/11/12 green).
+5. DC-013 tenant-isolation pass over the new follow-up-task code paths (all queries are `clinicId`-scoped already; re-verify server actions).
+6. Docs not yet updated: `DECISIONS.md` (add D-044: shared scoring model; D-045: FollowUpTask dual-FK named relations; D-046: email abstraction mock/live), `ARCHITECTURE.md` (AI response contract + FollowUpTask + email flow), `AI_CONTEXT.md` (dental qualification fields, activity types, email env vars), `README.md` (verify:email, email env vars, migration note), `TASKS.md` (mark DC-00x statuses per outcome).
+7. Update `CURRENT EXECUTION` in TASKS.md; do not commit/deploy (user instruction).
+
+## Secrets
+
+No real credentials added anywhere. `.env.local` untouched. `.env.example` gained only placeholders. No commits, no pushes, no deploys.
+
+---
+
 # SESSION 6 — Final Release Audit
 
 Session date: 2026-09-11

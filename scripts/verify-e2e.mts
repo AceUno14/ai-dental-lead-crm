@@ -48,6 +48,7 @@ async function main() {
   );
   const { runLeadAnalysis } = await import("@/lib/services/lead-analysis");
   const { addLeadNote, updateLeadStatus } = await import("@/lib/services/lead-workflow");
+  const { setFollowUpTaskStatus } = await import("@/lib/services/follow-up-tasks");
   const { publicLeadSchema } = await import("@/lib/validation/lead");
 
   const marker = Date.now().toString(36);
@@ -106,6 +107,49 @@ async function main() {
       !!stored && stored.summary.length > 0 && stored.recommendedAction.length > 0 && stored.draftReply.length > 0,
     );
     check("analysis records the model name", !!stored?.model);
+
+    console.log("\n2b. Dental qualification fields");
+
+    check(
+      "treatment value potential is a valid band",
+      !!stored && ["LOW", "MEDIUM", "HIGH", "PREMIUM", "UNKNOWN"].includes(stored.treatmentValuePotential),
+      stored?.treatmentValuePotential,
+    );
+    check(
+      "urgency is a supported dental urgency",
+      !!stored && ["EMERGENCY", "IMMEDIATE", "TODAY", "THIS_WEEK", "SOON", "FLEXIBLE", "UNKNOWN"].includes(stored.urgency),
+      stored?.urgency,
+    );
+    check(
+      "pain/need level is valid",
+      !!stored && ["HIGH", "MEDIUM", "LOW", "UNKNOWN"].includes(stored.painNeedLevel),
+      stored?.painNeedLevel,
+    );
+    check(
+      "insurance status is valid",
+      !!stored && ["HAS_INSURANCE", "NO_INSURANCE", "UNKNOWN"].includes(stored.insuranceStatus),
+      stored?.insuranceStatus,
+    );
+    check(
+      "payment readiness is valid",
+      !!stored && ["READY", "NEEDS_OPTIONS", "PRICE_SENSITIVE", "UNKNOWN"].includes(stored.paymentReadiness),
+      stored?.paymentReadiness,
+    );
+    check(
+      "follow-up priority is valid",
+      !!stored && ["IMMEDIATE", "HIGH", "NORMAL", "LOW"].includes(stored.followUpPriority),
+      stored?.followUpPriority,
+    );
+    check(
+      "recommended follow-up minutes is sane (5-4320)",
+      !!stored && stored.recommendedFollowUpMinutes >= 5 && stored.recommendedFollowUpMinutes <= 4320,
+      stored ? `minutes=${stored.recommendedFollowUpMinutes}` : undefined,
+    );
+    check(
+      "emergency enquiry scores HOT or has immediate follow-up",
+      !!stored && (stored.priority === "HOT" || stored.followUpPriority === "IMMEDIATE"),
+      stored ? `priority=${stored.priority} followUp=${stored.followUpPriority}` : undefined,
+    );
 
     console.log("\n3. Lead appears in the CRM");
 
@@ -199,6 +243,134 @@ async function main() {
     check("retry succeeds", retry.ok);
     const afterRetry = await prisma.leadAnalysis.count({ where: { leadId: lead.id } });
     check("retry upserts instead of duplicating", afterRetry === 1, `rows=${afterRetry}`);
+
+    console.log("\n9. AI follow-up task is created and idempotent");
+
+    const openAiTasksAfterFirst = await prisma.followUpTask.count({
+      where: { leadId: lead.id, source: "AI", status: "OPEN" },
+    });
+    check("exactly one open AI task after analysis", openAiTasksAfterFirst === 1, `count=${openAiTasksAfterFirst}`);
+
+    const secondRetry = await runLeadAnalysis(lead);
+    check("retry with task refresh succeeds", secondRetry.ok);
+
+    const openAiTasksAfterRetry = await prisma.followUpTask.count({
+      where: { leadId: lead.id, source: "AI", status: "OPEN" },
+    });
+    check(
+      "retry does not duplicate the AI task",
+      openAiTasksAfterRetry === 1,
+      `count=${openAiTasksAfterRetry}`,
+    );
+
+    const aiTask = await prisma.followUpTask.findFirst({
+      where: { leadId: lead.id, source: "AI", status: "OPEN" },
+    });
+    check("AI task is titled as a recommendation", !!aiTask?.title.startsWith("AI recommendation:"), aiTask?.title);
+    check(
+      "AI task due date follows the analysis",
+      !!aiTask && !!stored && aiTask.dueAt.getTime() > Date.now() - 60_000,
+    );
+
+    console.log("\n10. Staff completes the AI task");
+
+    const staffMember = await prisma.membership.findFirst({
+      where: { clinicId: clinic.id },
+      select: { userId: true },
+    });
+    check("clinic has a member for task completion", staffMember !== null);
+
+    if (staffMember && aiTask) {
+      const complete = await setFollowUpTaskStatus({
+        clinicId: clinic.id,
+        leadId: lead.id,
+        taskId: aiTask.id,
+        actorUserId: staffMember.userId,
+        status: "COMPLETED",
+      });
+      check("task completion succeeds", complete.ok);
+
+      const completedTask = await prisma.followUpTask.findUnique({ where: { id: aiTask.id } });
+      check(
+        "task is completed with a timestamp",
+        completedTask?.status === "COMPLETED" && completedTask.completedAt !== null,
+      );
+
+      // Re-running the analysis must NOT resurrect a completed AI task.
+      const thirdRun = await runLeadAnalysis(lead);
+      check("analysis re-run after completion succeeds", thirdRun.ok);
+      const resurrected = await prisma.followUpTask.count({
+        where: { leadId: lead.id, source: "AI" },
+      });
+      check(
+        "completed AI task is not resurrected or duplicated",
+        resurrected === 1,
+        `count=${resurrected}`,
+      );
+    }
+
+    console.log("\n11. Email alert decisioning (mock mode)");
+
+    const { shouldSendLeadAlert, buildLeadAlertEmail } = await import("@/lib/services/lead-alerts");
+    check(
+      "HOT lead triggers an alert",
+      shouldSendLeadAlert({ priority: "HOT", followUpPriority: "NORMAL" }),
+    );
+    check(
+      "IMMEDIATE follow-up triggers an alert even when WARM",
+      shouldSendLeadAlert({ priority: "WARM", followUpPriority: "IMMEDIATE" }),
+    );
+    check(
+      "COLD lead does not trigger an alert",
+      !shouldSendLeadAlert({ priority: "COLD", followUpPriority: "LOW" }),
+    );
+
+    if (stored) {
+      const email = buildLeadAlertEmail({
+        lead: { id: lead.id, name: lead.name, clinicId: clinic.id },
+        analysis: stored,
+        leadUrl: "https://example.test/leads/abc",
+      });
+      check("alert subject mentions priority", email.subject.includes(stored.priority));
+      check(
+        "alert body carries score, treatment and action",
+        email.text.includes(`${stored.leadScore}/100`) &&
+          email.text.includes(stored.recommendedAction),
+      );
+      check(
+        "alert body does not leak the full enquiry message",
+        !email.text.includes(lead.message),
+      );
+    }
+
+    const alertActivities = await prisma.leadActivity.count({
+      where: { leadId: lead.id, type: { in: ["EMAIL_ALERT_SENT", "EMAIL_ALERT_FAILED"] } },
+    });
+    check(
+      "no alert activity recorded without a configured recipient",
+      alertActivities === 0,
+      `count=${alertActivities}`,
+    );
+
+    console.log("\n12. Timeline records follow-up workflow events");
+
+    const finalTypes = new Set(
+      (
+        await prisma.leadActivity.findMany({
+          where: { leadId: lead.id },
+          select: { type: true },
+        })
+      ).map((activity) => activity.type),
+    );
+    check("FOLLOW_UP_CREATED recorded", finalTypes.has("FOLLOW_UP_CREATED"));
+    check("FOLLOW_UP_COMPLETED recorded", finalTypes.has("FOLLOW_UP_COMPLETED"));
+
+    const dashboardAfter = await getDashboardData(clinic.id);
+    check(
+      "dashboard exposes followUpsDue metric",
+      typeof dashboardAfter.metrics.followUpsDue === "number",
+      `followUpsDue=${dashboardAfter.metrics.followUpsDue}`,
+    );
   } finally {
     // Keep the development database clean: the seed owns the demo data.
     if (leadId) {

@@ -3,6 +3,9 @@
 import { findPublicClinicBySlug } from "@/lib/services/clinics";
 import { createPublicLead, findRecentDuplicateLead } from "@/lib/services/leads";
 import { runLeadAnalysis } from "@/lib/services/lead-analysis";
+import { sendLeadAlertIfNeeded } from "@/lib/services/lead-alerts";
+import { getServerEnv } from "@/lib/validation/env";
+import { prisma } from "@/lib/db/prisma";
 import { clinicSlugSchema, publicLeadSchema } from "@/lib/validation/lead";
 import type { ActionState } from "@/types";
 
@@ -84,7 +87,26 @@ export async function submitLeadAction(
     const lead = await createPublicLead({ clinicId: clinic.id, data: parsed.data });
 
     // 2. AI qualification runs afterwards and failures are recorded on the lead.
-    await runLeadAnalysis(lead);
+    const analysisResult = await runLeadAnalysis(lead);
+
+    // 3. Best-effort staff email alert for important leads (HOT / IMMEDIATE).
+    //    Every failure path inside is recorded on the timeline and never thrown,
+    //    so the visitor still gets the success confirmation.
+    if (analysisResult.ok) {
+      const analysis = await prisma.leadAnalysis.findUnique({ where: { leadId: lead.id } });
+
+      if (analysis) {
+        const alertOutcome = await sendLeadAlertIfNeeded({
+          lead,
+          analysis,
+          appUrl: getServerEnv().NEXT_PUBLIC_APP_URL,
+        });
+
+        if (alertOutcome.error) {
+          console.error("[public-lead] alert email failed", { leadId: lead.id });
+        }
+      }
+    }
 
     return {
       status: "success",

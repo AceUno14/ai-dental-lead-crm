@@ -5,9 +5,11 @@ import { revalidatePath } from "next/cache";
 import { requireClinicContext } from "@/lib/auth/clinic";
 import { runLeadAnalysisForClinic } from "@/lib/services/lead-analysis";
 import { addLeadNote, updateLeadStatus } from "@/lib/services/lead-workflow";
+import { setFollowUpTaskStatus } from "@/lib/services/follow-up-tasks";
 import {
   createLeadNoteSchema,
   retryAnalysisSchema,
+  updateFollowUpTaskSchema,
   updateLeadStatusSchema,
 } from "@/lib/validation/lead-actions";
 import type { ActionState } from "@/types";
@@ -80,6 +82,47 @@ export async function addLeadNoteAction(
 
   revalidateLead(parsed.data.leadId);
   return { status: "success", message: "Note added." };
+}
+
+export async function updateFollowUpTaskAction(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const context = await requireClinicContext();
+
+  const parsed = updateFollowUpTaskSchema.safeParse({
+    leadId: formData.get("leadId"),
+    taskId: formData.get("taskId"),
+    status: formData.get("status"),
+  });
+
+  if (!parsed.success) {
+    return { status: "error", message: "That task update was not valid." };
+  }
+
+  const result = await setFollowUpTaskStatus({
+    clinicId: context.clinic.id,
+    leadId: parsed.data.leadId,
+    taskId: parsed.data.taskId,
+    actorUserId: context.userId,
+    status: parsed.data.status,
+  });
+
+  if (!result.ok) {
+    return { status: "error", message: result.error };
+  }
+
+  revalidateLead(parsed.data.leadId);
+
+  return {
+    status: "success",
+    message:
+      parsed.data.status === "COMPLETED"
+        ? "Follow-up marked completed."
+        : parsed.data.status === "CANCELLED"
+          ? "Follow-up cancelled."
+          : "Follow-up re-opened.",
+  };
 }
 
 export async function retryLeadAnalysisAction(

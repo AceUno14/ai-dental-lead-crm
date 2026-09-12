@@ -293,6 +293,12 @@ async function main() {
             urgency: analysis.urgency,
             intent: analysis.intent,
             serviceCategory: analysis.serviceCategory,
+            treatmentValuePotential: analysis.treatmentValuePotential,
+            painNeedLevel: analysis.painNeedLevel,
+            insuranceStatus: analysis.insuranceStatus,
+            paymentReadiness: analysis.paymentReadiness,
+            followUpPriority: analysis.followUpPriority,
+            recommendedFollowUpMinutes: analysis.recommendedFollowUpMinutes,
             summary: analysis.summary,
             recommendedAction: analysis.recommendedAction,
             draftReply: analysis.draftReply,
@@ -345,6 +351,39 @@ async function main() {
           type: "STATUS_CHANGED",
           description: "Status changed from New to a later pipeline stage.",
           createdAt: new Date(createdAt.getTime() + 60 * 60 * 1000),
+        },
+      });
+    }
+
+    // Give every still-open lead the AI-recommended follow-up task so the
+    // dashboard's follow-ups-due card has realistic content.
+    if (lead.status === "NEW" || lead.status === "CONTACTED") {
+      const dueAt = new Date(
+        createdAt.getTime() + analysis.recommendedFollowUpMinutes * 60 * 1000,
+      );
+
+      await prisma.followUpTask.create({
+        data: {
+          clinicId: clinic.id,
+          leadId: createdLead.id,
+          title: `AI recommendation: follow up with ${lead.name}`,
+          description: analysis.recommendedAction,
+          dueAt,
+          priority: analysis.followUpPriority,
+          source: "AI",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+
+      await prisma.leadActivity.create({
+        data: {
+          clinicId: clinic.id,
+          leadId: createdLead.id,
+          type: "FOLLOW_UP_CREATED",
+          description: "AI-recommended follow-up task created.",
+          metadata: { source: "AI", dueAt: dueAt.toISOString() },
+          createdAt,
         },
       });
     }

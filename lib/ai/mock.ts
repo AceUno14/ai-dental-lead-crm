@@ -1,11 +1,14 @@
 import type { LeadAnalysisResult } from "@/lib/ai/schema";
 import type { LeadPromptInput } from "@/lib/ai/prompt";
+import { scoreDentalLead, followUpTiming, URGENCY_LABELS, type Urgency, type Intent } from "@/lib/ai/scoring";
 
 /**
  * Deterministic development analyzer.
  *
  * Mock mode never performs a network request and always returns a result that
- * satisfies the AI response schema.
+ * satisfies the AI response schema. All scoring flows through the shared
+ * lib/ai/scoring model so mock and live behaviour stay consistent and unit
+ * testable.
  */
 const EMERGENCY_KEYWORDS = [
   "broke",
@@ -13,6 +16,9 @@ const EMERGENCY_KEYWORDS = [
   "emergency",
   "urgent",
   "asap",
+  "severe",
+  "excruciating",
+  "unbearable",
   "pain",
   "painful",
   "hurts",
@@ -27,101 +33,228 @@ const EMERGENCY_KEYWORDS = [
   "cracked",
   "infected",
   "trauma",
+  "can't sleep",
+  "cannot sleep",
+  "can t sleep",
 ];
 
-const APPOINTMENT_KEYWORDS = [
+const HIGH_INTENT_KEYWORDS = [
   "appointment",
   "book",
   "booking",
   "schedule",
-  "available",
-  "availability",
   "come in",
-  "visit",
+  "come tomorrow",
+  "earliest",
+  "as soon as possible",
   "see a dentist",
-  "consultation",
+  "call me to schedule",
+  "please call me",
 ];
 
-const PRICE_KEYWORDS = ["price", "cost", "quote", "how much", "pricing", "payment plan"];
+const MEDIUM_INTENT_KEYWORDS = [
+  "available",
+  "availability",
+  "consultation",
+  "visit",
+  "how soon",
+  "opening",
+];
+
+const FINANCE_KEYWORDS = [
+  "insurance",
+  "insured",
+  "cover",
+  "covered",
+  "financing",
+  "finance",
+  "payment plan",
+  "payment plans",
+  "installment",
+  "self-pay",
+  "self pay",
+  "out of pocket",
+];
+
+const PRICE_KEYWORDS = ["price", "prices", "cost", "quote", "how much", "pricing"];
 
 const SERVICE_CATEGORY_MAP: Record<string, LeadAnalysisResult["serviceCategory"]> = {
   dental_emergency: "EMERGENCY",
   general_checkup: "GENERAL_DENTISTRY",
   cleaning: "CLEANING",
   cosmetic_consult: "COSMETIC",
+  veneers: "VENEERS",
   whitening: "WHITENING",
   implants: "IMPLANTS",
   orthodontics: "ORTHODONTICS",
   root_canal: "ROOT_CANAL",
   extraction: "EXTRACTION",
+  crowns: "CROWNS",
   dentures: "DENTURES",
   other: "OTHER",
 };
 
-const URGENCY_SCORE: Record<string, number> = {
-  IMMEDIATE: 30,
-  TODAY: 20,
-  THIS_WEEK: 12,
-  FLEXIBLE: 4,
-  UNKNOWN: 0,
+/** Rough commercial value band per treatment interest. */
+const TREATMENT_VALUE_MAP: Record<
+  LeadAnalysisResult["serviceCategory"],
+  LeadAnalysisResult["treatmentValuePotential"]
+> = {
+  EMERGENCY: "MEDIUM",
+  GENERAL_DENTISTRY: "LOW",
+  CLEANING: "LOW",
+  COSMETIC: "HIGH",
+  IMPLANTS: "PREMIUM",
+  ORTHODONTICS: "PREMIUM",
+  ROOT_CANAL: "HIGH",
+  EXTRACTION: "MEDIUM",
+  CROWNS: "HIGH",
+  VENEERS: "PREMIUM",
+  WHITENING: "MEDIUM",
+  DENTURES: "HIGH",
+  OTHER: "UNKNOWN",
+  UNKNOWN: "UNKNOWN",
 };
 
 function matchesAny(text: string, keywords: string[]): string[] {
   return keywords.filter((keyword) => text.includes(keyword));
 }
 
+function normaliseUrgency(value: string, emergencyHits: string[]): Urgency {
+  switch (value) {
+    case "IMMEDIATE":
+      // Distinguish an explicitly urgent enquiry from emergency signals.
+      return emergencyHits.length > 0 ? "EMERGENCY" : "IMMEDIATE";
+    case "TODAY":
+      return emergencyHits.length > 0 ? "EMERGENCY" : "TODAY";
+    case "THIS_WEEK":
+      return "THIS_WEEK";
+    case "FLEXIBLE":
+      return "FLEXIBLE";
+    default:
+      return emergencyHits.length > 0 ? "EMERGENCY" : "UNKNOWN";
+  }
+}
+
+function deriveIntent(haystack: string): Intent {
+  if (matchesAny(haystack, HIGH_INTENT_KEYWORDS).length > 0) {
+    return "HIGH";
+  }
+
+  if (matchesAny(haystack, MEDIUM_INTENT_KEYWORDS).length > 0) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
+}
+
+function derivePainNeed(haystack: string, emergencyHits: string[]): LeadAnalysisResult["painNeedLevel"] {
+  if (emergencyHits.length > 0) {
+    return "HIGH";
+  }
+
+  if (
+    matchesAny(haystack, [
+      "discomfort",
+      "worse",
+      "worsening",
+      "sensitive",
+      "throbbing",
+      "aching",
+      "consultation",
+      "replacement",
+    ]).length > 0
+  ) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
+}
+
+function deriveInsurance(haystack: string): LeadAnalysisResult["insuranceStatus"] {
+  if (matchesAny(haystack, ["i have insurance", "my insurance", "we have insurance", "i'm insured", "i am insured", "covered by"]).length > 0) {
+    return "HAS_INSURANCE";
+  }
+
+  if (matchesAny(haystack, ["no insurance", "don't have insurance", "do not have insurance", "without insurance", "self-pay", "self pay", "self funding", "cash"]).length > 0) {
+    return "NO_INSURANCE";
+  }
+
+  return "UNKNOWN";
+}
+
+function derivePaymentReadiness(
+  haystack: string,
+  insuranceStatus: LeadAnalysisResult["insuranceStatus"],
+): LeadAnalysisResult["paymentReadiness"] {
+  if (matchesAny(haystack, ["ready to proceed", "ready to book", "ready to go ahead", "let's book", "lets book", "i want to book", "book me in"]).length > 0) {
+    return "READY";
+  }
+
+  if (matchesAny(haystack, FINANCE_KEYWORDS).length > 0) {
+    return "NEEDS_OPTIONS";
+  }
+
+  if (matchesAny(haystack, PRICE_KEYWORDS).length > 0) {
+    return "PRICE_SENSITIVE";
+  }
+
+  // A lead whose insurance is confirmed is treated as payment-ready even
+  // without an explicit payment statement.
+  return insuranceStatus === "HAS_INSURANCE" ? "NEEDS_OPTIONS" : "UNKNOWN";
+}
+
 export function generateMockAnalysis(lead: LeadPromptInput): LeadAnalysisResult {
   const haystack = `${lead.message} ${lead.serviceInterest}`.toLowerCase();
 
-  let score = 35;
-
-  const urgency = normaliseUrgency(lead.submittedUrgency);
-  score += URGENCY_SCORE[urgency] ?? 0;
-
   const emergencyHits = matchesAny(haystack, EMERGENCY_KEYWORDS);
-  const appointmentHits = matchesAny(haystack, APPOINTMENT_KEYWORDS);
-  const priceHits = matchesAny(haystack, PRICE_KEYWORDS);
-
-  if (emergencyHits.length > 0) {
-    score += 20;
-  }
-
-  if (appointmentHits.length > 0) {
-    score += 10;
-  }
-
-  if (lead.message.trim().length >= 80) {
-    score += 5;
-  }
-
-  if (priceHits.length > 0) {
-    score -= 5;
-  }
-
-  if (emergencyHits.length === 0 && appointmentHits.length === 0) {
-    score -= 10;
-  }
-
-  const leadScore = Math.max(0, Math.min(100, Math.round(score)));
-  const priority: LeadAnalysisResult["priority"] =
-    leadScore >= 80 ? "HOT" : leadScore >= 50 ? "WARM" : "COLD";
-
+  const urgency = normaliseUrgency(lead.submittedUrgency, emergencyHits);
+  const intent = deriveIntent(haystack);
   const serviceCategory =
     emergencyHits.length > 0
       ? "EMERGENCY"
       : (SERVICE_CATEGORY_MAP[lead.serviceInterest] ?? "UNKNOWN");
+  const treatmentValuePotential =
+    serviceCategory === "EMERGENCY" && emergencyHits.length > 0
+      ? "MEDIUM"
+      : (TREATMENT_VALUE_MAP[serviceCategory] ?? "UNKNOWN");
+  const painNeedLevel = derivePainNeed(haystack, emergencyHits);
+  const insuranceStatus = deriveInsurance(haystack);
+  const paymentReadiness = derivePaymentReadiness(haystack, insuranceStatus);
 
-  const intent: LeadAnalysisResult["intent"] =
-    appointmentHits.length > 0
-      ? "HIGH"
-      : leadScore >= 60
-        ? "MEDIUM"
-        : leadScore >= 40
-          ? "LOW"
-          : "UNKNOWN";
+  const { leadScore, priority, followUpPriority, recommendedFollowUpMinutes } =
+    scoreDentalLead({
+      urgency,
+      intent,
+      treatmentValuePotential,
+      painNeedLevel,
+      insuranceStatus,
+      paymentReadiness,
+    });
 
-  const summary = buildSummary({ lead, priority, urgency, serviceCategory, emergencyHits });
-  const recommendedAction = buildRecommendedAction({ priority, urgency, serviceCategory });
+  // A follow-up deadline is always derived so staff never see a missing one.
+  const timing =
+    followUpPriority === "LOW" || recommendedFollowUpMinutes === 0
+      ? followUpTiming({ urgency, intent })
+      : { followUpPriority, recommendedFollowUpMinutes };
+
+  const summary = buildSummary({
+    lead,
+    urgency,
+    intent,
+    serviceCategory,
+    treatmentValuePotential,
+    painNeedLevel,
+    insuranceStatus,
+    paymentReadiness,
+    emergencyHits,
+  });
+  const recommendedAction = buildRecommendedAction({
+    urgency,
+    intent,
+    serviceCategory,
+    paymentReadiness,
+    recommendedFollowUpMinutes: timing.recommendedFollowUpMinutes,
+  });
 
   return {
     leadScore,
@@ -129,72 +262,119 @@ export function generateMockAnalysis(lead: LeadPromptInput): LeadAnalysisResult 
     urgency,
     intent,
     serviceCategory,
+    treatmentValuePotential,
+    painNeedLevel,
+    insuranceStatus,
+    paymentReadiness,
+    followUpPriority: timing.followUpPriority,
+    recommendedFollowUpMinutes: timing.recommendedFollowUpMinutes,
     summary,
     recommendedAction,
     draftReply: buildDraftReply(lead),
   };
 }
 
-function normaliseUrgency(value: string): LeadAnalysisResult["urgency"] {
-  switch (value) {
-    case "IMMEDIATE":
-    case "TODAY":
-    case "THIS_WEEK":
-    case "FLEXIBLE":
-      return value;
-    default:
-      return "UNKNOWN";
+function describePayment(
+  insuranceStatus: LeadAnalysisResult["insuranceStatus"],
+  paymentReadiness: LeadAnalysisResult["paymentReadiness"],
+): string {
+  if (paymentReadiness === "PRICE_SENSITIVE") {
+    return " The enquiry asks about price, so lead with treatment options before costs.";
   }
+
+  if (paymentReadiness === "NEEDS_OPTIONS") {
+    return " The enquiry mentions insurance or financing, so have payment options ready.";
+  }
+
+  if (paymentReadiness === "READY") {
+    return " The enquiry signals readiness to proceed without price discussion.";
+  }
+
+  if (insuranceStatus === "HAS_INSURANCE") {
+    return " Insurance was mentioned; confirm coverage details on contact.";
+  }
+
+  return "";
 }
 
 function buildSummary(input: {
   lead: LeadPromptInput;
-  priority: LeadAnalysisResult["priority"];
-  urgency: LeadAnalysisResult["urgency"];
+  urgency: Urgency;
+  intent: Intent;
   serviceCategory: LeadAnalysisResult["serviceCategory"];
+  treatmentValuePotential: LeadAnalysisResult["treatmentValuePotential"];
+  painNeedLevel: LeadAnalysisResult["painNeedLevel"];
+  insuranceStatus: LeadAnalysisResult["insuranceStatus"];
+  paymentReadiness: LeadAnalysisResult["paymentReadiness"];
   emergencyHits: string[];
 }): string {
-  const { lead, urgency, serviceCategory, emergencyHits } = input;
+  const {
+    lead,
+    urgency,
+    intent,
+    serviceCategory,
+    treatmentValuePotential,
+    painNeedLevel,
+    emergencyHits,
+  } = input;
 
-  const urgencyText =
-    urgency === "IMMEDIATE"
-      ? "reports an urgent need"
-      : urgency === "TODAY"
-        ? "would like to be seen within a day or two"
-        : urgency === "THIS_WEEK"
-          ? "would like an appointment this week"
-          : "has a flexible timeframe";
-
+  const urgencyText = URGENCY_LABELS[urgency].toLowerCase();
   const categoryText = serviceCategory.toLowerCase().replace(/_/g, " ");
-  const symptomText =
-    emergencyHits.length > 0
-      ? " The enquiry mentions symptoms that staff should clarify by phone."
-      : "";
+  const intentText =
+    intent === "HIGH"
+      ? "and is ready to book an appointment"
+      : intent === "MEDIUM"
+        ? "and is open to booking a consultation"
+        : "and is mainly gathering information";
+  const painText =
+    painNeedLevel === "HIGH"
+      ? " The enquiry describes a strong immediate need that staff should clarify by phone."
+      : painNeedLevel === "MEDIUM"
+        ? " The enquiry mentions ongoing discomfort or a worsening concern."
+        : "";
 
-  return `Submitted enquiry (mock analysis) for the ${categoryText} service. The visitor ${urgencyText}.${
+  return `Submitted enquiry (mock analysis) about ${categoryText} with ${urgencyText.toLowerCase()} response need, appointment intent ${intent.toLowerCase()}, and ${treatmentValuePotential.toLowerCase()} treatment value potential. The visitor ${urgencyText === "emergency" ? "needs urgent attention" : `wants contact ${urgencyText}`}${intentText}.${painText}${describePayment(input.insuranceStatus, input.paymentReadiness)}${
     lead.message.trim().length > 0 ? " Original message is available in the lead record." : ""
-  }${symptomText}`;
+  }${emergencyHits.length > 0 ? " The enquiry contains emergency signals that staff should clarify by phone." : ""}`;
 }
 
 function buildRecommendedAction(input: {
-  priority: LeadAnalysisResult["priority"];
-  urgency: LeadAnalysisResult["urgency"];
+  urgency: Urgency;
+  intent: Intent;
   serviceCategory: LeadAnalysisResult["serviceCategory"];
+  paymentReadiness: LeadAnalysisResult["paymentReadiness"];
+  recommendedFollowUpMinutes: number;
 }): string {
-  const { priority, urgency, serviceCategory } = input;
+  const { urgency, intent, serviceCategory, paymentReadiness, recommendedFollowUpMinutes } = input;
+  const categoryText = serviceCategory.toLowerCase().replace(/_/g, " ");
 
-  if (priority === "HOT" && urgency === "IMMEDIATE") {
-    return "Call the lead within 5 minutes and offer the earliest available appointment.";
+  if (urgency === "EMERGENCY") {
+    const paymentNote =
+      paymentReadiness === "NEEDS_OPTIONS"
+        ? " and confirm any insurance details on the call"
+        : "";
+
+    return `Call within ${recommendedFollowUpMinutes} minutes and offer the earliest available emergency appointment${paymentNote}.`;
   }
 
-  if (priority === "HOT") {
-    return "Call the lead today and confirm a suitable appointment time.";
+  if (urgency === "IMMEDIATE") {
+    return `Call within ${recommendedFollowUpMinutes} minutes to arrange the earliest suitable ${categoryText} appointment.`;
   }
 
-  if (priority === "WARM") {
-    return `Call or message the lead within 24 hours to discuss the ${serviceCategory
-      .toLowerCase()
-      .replace(/_/g, " ")} enquiry and confirm availability.`;
+  if (urgency === "TODAY" && intent === "HIGH") {
+    return `Call within ${recommendedFollowUpMinutes} minutes and offer today's remaining ${categoryText} slots.`;
+  }
+
+  if (paymentReadiness === "PRICE_SENSITIVE") {
+    return `Send a same-day message with ${categoryText} options and pricing guidance, then offer to book a consultation.`;
+  }
+
+  if (paymentReadiness === "NEEDS_OPTIONS") {
+    return `Contact within ${Math.round(recommendedFollowUpMinutes / 60)} hours with ${categoryText} consultation availability and financing information.`;
+  }
+
+  if (urgency === "THIS_WEEK" || urgency === "SOON") {
+    return `Contact the lead within ${Math.round(recommendedFollowUpMinutes / 60)} hours to discuss ${categoryText} availability.`;
   }
 
   return "Send a friendly follow-up message with general information and invite the lead to book when ready.";

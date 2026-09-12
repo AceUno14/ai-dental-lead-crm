@@ -35,9 +35,11 @@ enum LeadPriority {
 }
 
 enum LeadUrgency {
+  EMERGENCY
   IMMEDIATE
   TODAY
   THIS_WEEK
+  SOON
   FLEXIBLE
   UNKNOWN
 }
@@ -58,10 +60,64 @@ enum ServiceCategory {
   ORTHODONTICS
   ROOT_CANAL
   EXTRACTION
+  CROWNS
+  VENEERS
   WHITENING
   DENTURES
   OTHER
   UNKNOWN
+}
+
+// Commercial value band of the treatment interest. Business prioritisation
+// only — never an estimate or quote of a treatment price.
+enum TreatmentValuePotential {
+  LOW
+  MEDIUM
+  HIGH
+  PREMIUM
+  UNKNOWN
+}
+
+// Strength of the patient's stated need. Describes how strongly the enquiry
+// expresses a need — it is not a clinical assessment.
+enum PainNeedLevel {
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
+}
+
+enum InsuranceStatus {
+  HAS_INSURANCE
+  NO_INSURANCE
+  UNKNOWN
+}
+
+enum PaymentReadiness {
+  READY
+  NEEDS_OPTIONS
+  PRICE_SENSITIVE
+  UNKNOWN
+}
+
+// How quickly the clinic should follow up. Operational routing, not medicine.
+enum FollowUpPriority {
+  IMMEDIATE
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum FollowUpTaskStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum FollowUpTaskSource {
+  AI
+  STAFF
+  SYSTEM
 }
 
 enum ContactMethod {
@@ -81,6 +137,10 @@ enum ActivityType {
   APPOINTMENT_SET
   LEAD_WON
   LEAD_LOST
+  FOLLOW_UP_CREATED
+  FOLLOW_UP_COMPLETED
+  EMAIL_ALERT_SENT
+  EMAIL_ALERT_FAILED
 }
 
 // --------------------------------------------
@@ -102,6 +162,7 @@ model User {
   memberships  Membership[]
   leadNotes    LeadNote[]
   leadActivity LeadActivity[]
+  createdTasks FollowUpTask[]
 
   @@map("user")
 }
@@ -169,6 +230,7 @@ model Clinic {
   analyses    LeadAnalysis[]
   notes       LeadNote[]
   activities  LeadActivity[]
+  tasks       FollowUpTask[]
 
   @@map("clinic")
 }
@@ -208,6 +270,7 @@ model Lead {
   analysis   LeadAnalysis?
   notes      LeadNote[]
   activities LeadActivity[]
+  tasks      FollowUpTask[] @relation("FollowUpTaskToLead")
 
   @@index([clinicId])
   @@index([clinicId, createdAt])
@@ -216,26 +279,61 @@ model Lead {
 }
 
 model LeadAnalysis {
-  id                String          @id @default(cuid())
-  clinicId          String
-  leadId            String          @unique
-  leadScore         Int
-  priority          LeadPriority
-  urgency           LeadUrgency
-  intent            LeadIntent
-  serviceCategory   ServiceCategory
-  summary           String
-  recommendedAction String
-  draftReply        String
-  model             String?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id                         String                  @id @default(cuid())
+  clinicId                   String
+  leadId                     String                  @unique
+  leadScore                  Int
+  priority                   LeadPriority
+  urgency                    LeadUrgency
+  intent                     LeadIntent
+  serviceCategory            ServiceCategory
+  treatmentValuePotential    TreatmentValuePotential @default(UNKNOWN)
+  painNeedLevel              PainNeedLevel           @default(UNKNOWN)
+  insuranceStatus            InsuranceStatus         @default(UNKNOWN)
+  paymentReadiness           PaymentReadiness        @default(UNKNOWN)
+  followUpPriority           FollowUpPriority        @default(NORMAL)
+  recommendedFollowUpMinutes Int                     @default(240)
+  summary                    String
+  recommendedAction          String
+  draftReply                 String
+  model                      String?
+  createdAt                  DateTime                @default(now())
+  updatedAt                  DateTime                @updatedAt
 
-  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
-  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  clinic Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  lead   Lead           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  tasks  FollowUpTask[] @relation("FollowUpTaskToAnalysis")
 
   @@index([clinicId])
+  @@index([clinicId, followUpPriority])
   @@map("lead_analysis")
+}
+
+// A concrete staff follow-up attached to one lead. AI-sourced tasks are
+// recommendations (one open AI task per lead, upserted — never duplicated).
+model FollowUpTask {
+  id          String             @id @default(cuid())
+  clinicId    String
+  leadId      String
+  title       String
+  description String?
+  dueAt       DateTime
+  status      FollowUpTaskStatus @default(OPEN)
+  priority    FollowUpPriority   @default(NORMAL)
+  source      FollowUpTaskSource @default(STAFF)
+  createdById String?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  clinic    Clinic        @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  lead      Lead          @relation("FollowUpTaskToLead", fields: [leadId], references: [id], onDelete: Cascade, map: "follow_up_task_lead_fkey")
+  createdBy User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  analysis  LeadAnalysis? @relation("FollowUpTaskToAnalysis", fields: [leadId], references: [leadId], onDelete: Cascade, map: "follow_up_task_analysis_fkey")
+
+  @@index([clinicId, status, dueAt])
+  @@index([leadId, status])
+  @@map("follow_up_task")
 }
 
 model LeadNote {

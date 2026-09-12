@@ -368,6 +368,18 @@ workflow against the real database: public lead submission, AI qualification, ap
 lead detail with the AI recommendation, status change, internal note, activity timeline, tenant
 isolation between clinics, and idempotent AI retry. It cleans up the records it creates.
 
+The dental conversion workflow sections also verify: expanded dental qualification fields
+(treatment value, pain/need, insurance, payment readiness, follow-up priority/timing), AI
+follow-up task creation and retry idempotency (no duplicate open tasks, no resurrection of
+completed ones), staff task completion, email alert decisioning and content, and the new
+activity timeline events.
+
+MIGRATION REQUIREMENT: the dental conversion migration
+`prisma/migrations/20260913000000_dental_conversion_workflow` must be applied to the database
+BEFORE running `verify:e2e`, `db:seed`, or using the follow-up task / email alert workflow against
+that database. The migration is additive (new enums, new defaulted LeadAnalysis columns, new
+`follow_up_task` table) and requires no data changes.
+
 ---
 
 # VERIFY THE AI PROVIDER
@@ -393,6 +405,46 @@ npm run verify:ai -- --probe
 Performs one real chat completion against the configured provider.
 
 It exits non-zero when a check fails, so it can gate a deployment. It never prints `AI_API_KEY`.
+
+---
+
+# VERIFY EMAIL ALERTS
+
+Offline (mock + loopback stub, no provider account, no network):
+
+npm run verify:email
+
+Checks mock-mode sends, safe failure when live credentials are missing, HOT/IMMEDIATE alert
+decisioning (COLD leads never alert), alert content (operational data only — never the enquiry
+body), the live Resend request shape against a loopback stub, and that provider errors resolve
+without throwing into the lead pipeline.
+
+---
+
+# EMAIL ALERT CONFIGURATION
+
+Email alerts are optional; the CRM works fully without them.
+
+EMAIL_MODE="mock"  (default; alerts resolve without any network call)
+
+EMAIL_MODE="live"  (sends through the Resend API)
+
+RESEND_API_KEY     (required only for live mode)
+
+ALERT_FROM_EMAIL   (optional display sender, e.g. "Dental CRM <alerts@yourclinic.com>")
+
+ALERT_RECIPIENT_EMAIL  (clinic staff mailbox; when unset, alerts are skipped entirely)
+
+Behavior: an alert is sent when a lead qualifies HOT or its follow-up priority is IMMEDIATE.
+Alerts contain operational CRM data only (patient name, priority, score, treatment band, urgency,
+recommended action, CRM link) — never medical history, prices, or the enquiry body. Success and
+failure are recorded on the lead timeline (`EMAIL_ALERT_SENT` / `EMAIL_ALERT_FAILED`); an email
+outage never affects lead capture, AI analysis, or follow-up tasks. No patient reply is ever sent
+automatically — the draft reply is review-only text for staff.
+
+Follow-up tasks: AI qualification creates ONE open AI-recommended task per lead (retry-safe),
+staff mark it completed/cancelled/reopened on the lead detail page. AI tasks are labelled as
+recommendations and are never completed automatically.
 
 ---
 

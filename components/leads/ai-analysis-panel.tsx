@@ -3,6 +3,45 @@ import { RetryAnalysisButton } from "@/components/leads/retry-analysis-button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import type { LeadAnalysis } from "@/lib/generated/prisma/client";
 
+const URGENCY_TEXT: Record<string, string> = {
+  EMERGENCY: "Emergency",
+  IMMEDIATE: "Immediate",
+  TODAY: "Today",
+  THIS_WEEK: "This week",
+  SOON: "Soon",
+  FLEXIBLE: "Flexible",
+  UNKNOWN: "Unknown",
+};
+
+function QualificationRow({
+  label,
+  value,
+  tone = "",
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className={`text-sm font-medium text-slate-800 ${tone}`}>{value}</span>
+    </div>
+  );
+}
+
+function formatFollowUpWindow(minutes: number): string {
+  if (minutes < 60) {
+    return `${minutes} minutes`;
+  }
+
+  if (minutes < 1440) {
+    return `${Math.round(minutes / 60)} hours`;
+  }
+
+  return `${Math.round(minutes / 1440)} day(s)`;
+}
+
 export function AiAnalysisPanel({
   leadId,
   analysis,
@@ -34,6 +73,13 @@ export function AiAnalysisPanel({
     );
   }
 
+  const followUpTone =
+    analysis.followUpPriority === "IMMEDIATE"
+      ? "text-red-700"
+      : analysis.followUpPriority === "HIGH"
+        ? "text-amber-700"
+        : "text-slate-800";
+
   return (
     <Card>
       <CardHeader
@@ -41,7 +87,7 @@ export function AiAnalysisPanel({
           <span className="flex flex-wrap items-center gap-2">
             AI qualification
             <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-200">
-              AI-generated · review before sending
+              AI-generated · review before acting/sending
             </span>
           </span>
         }
@@ -53,17 +99,42 @@ export function AiAnalysisPanel({
           <ScoreBadge score={analysis.leadScore} />
           <PriorityBadge priority={analysis.priority} />
           <span className="text-xs text-slate-500">
-            Urgency: <span className="font-medium text-slate-700">{analysis.urgency}</span>
+            Follow-up:{" "}
+            <span className={`font-medium ${followUpTone}`}>{analysis.followUpPriority}</span>
           </span>
           <span className="text-xs text-slate-500">
-            Intent: <span className="font-medium text-slate-700">{analysis.intent}</span>
-          </span>
-          <span className="text-xs text-slate-500">
-            Service:{" "}
+            Respond within:{" "}
             <span className="font-medium text-slate-700">
-              {analysis.serviceCategory.replace(/_/g, " ")}
+              {formatFollowUpWindow(analysis.recommendedFollowUpMinutes)}
             </span>
           </span>
+        </div>
+
+        <div className="grid gap-x-8 gap-y-1 rounded-lg border border-slate-200 px-4 py-3 sm:grid-cols-2">
+          <QualificationRow
+            label="Treatment interest"
+            value={analysis.serviceCategory.replace(/_/g, " ")}
+          />
+          <QualificationRow
+            label="Treatment value"
+            value={analysis.treatmentValuePotential}
+          />
+          <QualificationRow
+            label="Urgency"
+            value={URGENCY_TEXT[analysis.urgency] ?? analysis.urgency}
+            tone={analysis.urgency === "EMERGENCY" ? "text-red-700" : ""}
+          />
+          <QualificationRow label="Pain / need" value={analysis.painNeedLevel} />
+          <QualificationRow label="Appointment intent" value={analysis.intent} />
+          <QualificationRow
+            label="Insurance"
+            value={analysis.insuranceStatus.replace(/_/g, " ").toLowerCase()}
+          />
+          <QualificationRow
+            label="Payment readiness"
+            value={analysis.paymentReadiness.replace(/_/g, " ").toLowerCase()}
+          />
+          <QualificationRow label="Model" value={analysis.model ?? "unknown"} />
         </div>
 
         <div>
@@ -92,7 +163,7 @@ export function AiAnalysisPanel({
         </div>
 
         <p className="text-xs text-slate-400">
-          Model: {analysis.model ?? "unknown"} · Updated{" "}
+          Updated{" "}
           {new Intl.DateTimeFormat("en-US", {
             month: "short",
             day: "numeric",

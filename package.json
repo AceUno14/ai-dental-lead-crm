@@ -18,6 +18,7 @@
     "db:studio": "prisma studio",
     "verify:e2e": "tsx scripts/verify-e2e.mts",
     "verify:ai": "tsx scripts/verify-ai-provider.mts",
+    "verify:email": "tsx scripts/verify-email-alerts.mts",
     "security:revoke-demo-credential": "tsx scripts/remove-demo-credential.mts"
   },
   "dependencies": {

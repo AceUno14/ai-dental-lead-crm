@@ -109,6 +109,9 @@ export async function getClinicLeadDetail(clinicId: string, leadId: string) {
         take: 50,
         include: { actor: { select: { name: true } } },
       },
+      tasks: {
+        orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+      },
     },
   });
 }
@@ -121,11 +124,23 @@ export type ClinicLeadDetail = NonNullable<
  * Dashboard counters. Every query is scoped to the authorized clinic.
  */
 export async function getDashboardData(clinicId: string) {
-  const [totalLeads, newLeads, hotLeads, appointmentsSet, recentLeads] = await Promise.all([
+  const now = new Date();
+
+  const [
+    totalLeads,
+    newLeads,
+    hotLeads,
+    appointmentsSet,
+    followUpsDue,
+    recentLeads,
+  ] = await Promise.all([
     prisma.lead.count({ where: { clinicId } }),
     prisma.lead.count({ where: { clinicId, status: "NEW" } }),
     prisma.lead.count({ where: { clinicId, analysis: { priority: "HOT" } } }),
     prisma.lead.count({ where: { clinicId, status: "APPOINTMENT_SET" } }),
+    prisma.followUpTask.count({
+      where: { clinicId, status: "OPEN", dueAt: { lte: now } },
+    }),
     prisma.lead.findMany({
       where: { clinicId },
       orderBy: { createdAt: "desc" },
@@ -136,7 +151,16 @@ export async function getDashboardData(clinicId: string) {
         serviceInterest: true,
         status: true,
         createdAt: true,
-        analysis: { select: { leadScore: true, priority: true } },
+        analysis: {
+          select: {
+            leadScore: true,
+            priority: true,
+            urgency: true,
+            followUpPriority: true,
+            recommendedFollowUpMinutes: true,
+            updatedAt: true,
+          },
+        },
       },
     }),
   ]);
@@ -146,9 +170,10 @@ export async function getDashboardData(clinicId: string) {
     newLeads,
     hotLeads,
     appointmentsSet,
+    followUpsDue,
   };
 
-  return { metrics, recentLeads };
+  return { metrics, recentLeads, now };
 }
 
 /**

@@ -5,6 +5,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { PriorityBadge, ScoreBadge, StatusBadge } from "@/components/leads/lead-badges";
 import { requireClinicContext } from "@/lib/auth/clinic";
 import { getDashboardData } from "@/lib/services/leads";
+import { listClinicFollowUps } from "@/lib/services/follow-up-tasks";
 import { serviceInterestLabel } from "@/lib/validation/lead";
 
 export const metadata: Metadata = {
@@ -19,14 +20,26 @@ function formatDate(value: Date): string {
   }).format(value);
 }
 
+function formatDue(value: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(value);
+}
+
 export default async function DashboardPage() {
   const { clinic } = await requireClinicContext();
-  const { metrics, recentLeads } = await getDashboardData(clinic.id);
+  const { metrics, recentLeads, now } = await getDashboardData(clinic.id);
+  const dueTasks = await listClinicFollowUps(clinic.id);
+  const nowMs = now.getTime();
 
   const cards = [
     { label: "Total leads", value: metrics.totalLeads },
     { label: "New leads", value: metrics.newLeads },
     { label: "Hot leads", value: metrics.hotLeads },
+    { label: "Follow-ups due", value: metrics.followUpsDue },
     { label: "Appointments set", value: metrics.appointmentsSet },
   ];
 
@@ -47,7 +60,7 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {cards.map((card) => (
           <Card key={card.label}>
             <CardBody>
@@ -57,8 +70,57 @@ export default async function DashboardPage() {
               <p className="mt-2 text-3xl font-semibold text-slate-900">{card.value}</p>
             </CardBody>
           </Card>
-        ))}
+        ))
+        }
       </div>
+
+      <Card>
+        <CardHeader
+          title="Open follow-ups"
+          description="AI-recommended and staff tasks, due soonest first."
+        />
+        {dueTasks.length === 0 ? (
+          <CardBody>
+            <p className="text-sm text-slate-500">No open follow-up tasks right now.</p>
+          </CardBody>
+        ) : (
+          <ul className="divide-y divide-slate-200">
+            {dueTasks.slice(0, 8).map((task) => {
+              const overdue = task.dueAt.getTime() <= nowMs;
+
+              return (
+                <li key={task.id}>
+                  <Link
+                    href={`/leads/${task.lead.id}`}
+                    className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 transition hover:bg-slate-50 ${
+                      overdue ? "bg-red-50/60" : ""
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-900">
+                        {task.lead.name}
+                      </p>
+                      <p className="truncate text-xs text-slate-500">{task.title}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-semibold ${
+                          overdue ? "text-red-700" : "text-slate-500"
+                        }`}
+                      >
+                        {overdue ? "Overdue" : "Due"} {formatDue(task.dueAt)}
+                      </span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                        {task.priority}
+                      </span>
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
 
       <Card>
         <CardHeader
@@ -94,6 +156,9 @@ export default async function DashboardPage() {
                     <p className="truncate text-sm font-medium text-slate-900">{lead.name}</p>
                     <p className="truncate text-xs text-slate-500">
                       {serviceInterestLabel(lead.serviceInterest)} · {formatDate(lead.createdAt)}
+                      {lead.analysis
+                        ? ` · ${lead.analysis.urgency.toLowerCase().replace(/_/g, " ")} urgency`
+                        : " · not analysed yet"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

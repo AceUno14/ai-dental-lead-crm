@@ -27,6 +27,11 @@ const serverEnvSchema = z.object({
   AI_MODEL: z.string().optional(),
   // Optional per-request timeout in milliseconds. Clamped by lib/ai/client.ts.
   AI_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  // Outbound email (staff lead alerts). mock = no network, live = Resend.
+  EMAIL_MODE: z.enum(["mock", "live"]).default("mock"),
+  RESEND_API_KEY: z.string().optional(),
+  ALERT_FROM_EMAIL: z.string().optional(),
+  ALERT_RECIPIENT_EMAIL: z.string().optional(),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

@@ -28,13 +28,20 @@ Public Dental Lead Form
 → Lead Score
 → Priority
 → Urgency
-→ Service Category
+→ Treatment Interest / Value
+→ Pain / Need
+→ Appointment Intent
+→ Insurance / Payment Readiness
 → Recommended Action
-→ Draft Reply
+→ Follow-up Task (AI-recommended, idempotent)
+→ Email Alert (HOT / IMMEDIATE, best-effort)
 → Staff Dashboard
 → Human Review
 → Contact Lead
 → Appointment Set / Won / Lost
+
+Failure invariants: the lead is persisted FIRST; AI, follow-up task and email failures are
+recorded on the timeline and never lose a lead; nothing is sent to a patient automatically.
 
 Example:
 
@@ -199,21 +206,37 @@ Do not hard-code DeepSeek, OpenAI, OpenRouter, or another provider throughout th
 
 The AI must return structured data containing:
 
-leadScore
+leadScore  (1-100)
 
-priority
+priority  (HOT/WARM/COLD)
 
-urgency
+urgency  (EMERGENCY/IMMEDIATE/TODAY/THIS_WEEK/SOON/FLEXIBLE/UNKNOWN — "how fast should staff respond?")
 
-intent
+intent  (HIGH/MEDIUM/LOW/UNKNOWN — appointment intent)
 
-serviceCategory
+serviceCategory  (treatment interest, incl. CROWNS/VENEERS)
+
+treatmentValuePotential  (LOW/MEDIUM/HIGH/PREMIUM/UNKNOWN — business value band, never a price)
+
+painNeedLevel  (HIGH/MEDIUM/LOW/UNKNOWN — strength of stated need, not a diagnosis)
+
+insuranceStatus  (HAS_INSURANCE/NO_INSURANCE/UNKNOWN — never guessed)
+
+paymentReadiness  (READY/NEEDS_OPTIONS/PRICE_SENSITIVE/UNKNOWN)
+
+followUpPriority  (IMMEDIATE/HIGH/NORMAL/LOW)
+
+recommendedFollowUpMinutes  (5-4320)
 
 summary
 
 recommendedAction
 
 draftReply
+
+Scoring weights and bands are defined in lib/ai/scoring.ts (see DECISIONS.md D-044).
+A patient is never penalised for lacking insurance; lack of insurance changes the follow-up
+strategy (financing information), not the priority.
 
 Example:
 
@@ -521,6 +544,35 @@ APPOINTMENT_SET
 LEAD_WON
 
 LEAD_LOST
+
+FOLLOW_UP_CREATED
+
+FOLLOW_UP_COMPLETED
+
+EMAIL_ALERT_SENT
+
+EMAIL_ALERT_FAILED
+
+## FOLLOW-UP TASKS
+
+AI qualification upserts ONE open AI-sourced FollowUpTask per lead (idempotent on retries;
+completed AI tasks are never resurrected). Staff can mark completed, cancel, or reopen. All task
+queries are clinic-scoped server-side. See DECISIONS.md D-045.
+
+## EMAIL ALERTS (OPTIONAL)
+
+Environment variables (placeholders only in .env.example):
+
+EMAIL_MODE  (mock = default, no network; live = Resend)
+
+RESEND_API_KEY  (live mode only)
+
+ALERT_FROM_EMAIL  (optional display sender)
+
+ALERT_RECIPIENT_EMAIL  (clinic staff mailbox; unset = alerts skipped)
+
+Alerts fire for HOT leads and/or IMMEDIATE follow-up priority. Email failure never fails lead
+capture, analysis, or task creation; results are recorded as EMAIL_ALERT_SENT/FAILED.
 
 ---
 

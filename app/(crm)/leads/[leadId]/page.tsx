@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { ActivityTimeline } from "@/components/leads/activity-timeline";
 import { AiAnalysisPanel } from "@/components/leads/ai-analysis-panel";
+import { FollowUpTaskCard } from "@/components/leads/follow-up-task-card";
 import { StatusBadge } from "@/components/leads/lead-badges";
 import { LeadStatusForm } from "@/components/leads/lead-status-form";
 import { NoteForm } from "@/components/leads/note-form";
@@ -62,6 +63,16 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ lea
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <AiAnalysisPanel leadId={lead.id} analysis={lead.analysis} />
+
+          <Card>
+            <CardHeader
+              title="Follow-up tasks"
+              description="AI tasks are recommendations. Completion is always a staff decision."
+            />
+            <CardBody>
+              <FollowUpTaskCard tasks={lead.tasks} />
+            </CardBody>
+          </Card>
 
           <Card>
             <CardHeader title="Original enquiry" />

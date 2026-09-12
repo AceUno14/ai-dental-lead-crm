@@ -957,6 +957,85 @@ Consequences:
 
 ---
 
+# D-044 — Shared Dental Scoring Model
+
+Status: ACCEPTED (Session 8)
+
+`lib/ai/scoring.ts` is the single source of truth for lead scoring:
+
+- Component weights: urgency 25, appointment intent 20, treatment value potential 20,
+  pain/need strength 15, payment readiness 10, responsiveness/completeness 10 (sum 100).
+- Score range is clamped to 1–100; an all-UNKNOWN enquiry scores the floor, not zero.
+- Priority bands: HOT ≥ 80, WARM ≥ 50, COLD < 50 (`priorityFromScore`).
+- Follow-up timing (`followUpTiming`): EMERGENCY → IMMEDIATE/5 min, IMMEDIATE → 10 min,
+  TODAY+HIGH intent → 15 min, TODAY → 60 min, HIGH intent → 120 min, THIS_WEEK/SOON → 240 min,
+  FLEXIBLE → 1 business day, UNKNOWN → 2 business days.
+
+Rationale: mock mode must be deterministic and testable, the live prompt must teach the same
+weighting, and tests must assert both. One shared module prevents drift between modes.
+
+Boundaries: the model performs business qualification only. Urgency means "how quickly should staff
+respond", not clinical severity; painNeedLevel records the strength of the *stated* need; payment
+readiness never punishes a patient for lacking insurance (NO_INSURANCE + READY scores within one
+point of HAS_INSURANCE + READY and routes to a financing-first follow-up instead of a lower
+priority). No protected characteristic is used anywhere in the model.
+
+---
+
+# D-045 — FollowUpTask Relation / Constraint Design
+
+Status: ACCEPTED (Session 7, audited Session 8)
+
+Follow-ups are a dedicated `FollowUpTask` model rather than overloading `LeadActivity`:
+activities are an immutable log, tasks are mutable workflow state with `dueAt`, `status`,
+`priority`, `source` and `completedAt`. Every task carries `clinicId` (tenant boundary) plus
+indexes `(clinicId, status, dueAt)` and `(leadId, status)`.
+
+The model intentionally has TWO foreign keys on the same column `leadId`:
+
+- `follow_up_task_lead_fkey` → `lead.id` (via relation `"FollowUpTaskToLead"`)
+- `follow_up_task_analysis_fkey` → `lead_analysis.leadId` (via relation
+  `"FollowUpTaskToAnalysis"`; corrected in Session 9 — the original schema referenced
+  `lead_analysis.id`, which can never be satisfied because `follow_up_task.leadId` stores the
+  lead id; `lead_analysis.leadId` is `@unique` and is the correct referential target)
+
+Both `map:` names are REQUIRED: Prisma/Postgres would otherwise derive the same constraint name
+(`follow_up_task_leadId_fkey`) twice and fail validation. Do not "simplify" these away.
+
+AI task idempotency (`upsertAiFollowUpTask`): an analysis run refreshes the single OPEN AI task
+(dueAt/priority/description) instead of creating duplicates; if the existing AI task is COMPLETED
+it is returned untouched — completed recommendations are never resurrected and retries never stack
+new tasks; only a lead with no open/completed AI task gets a new one. AI tasks are titled
+"AI recommendation: …" so staff always see them as advisory.
+
+---
+
+# D-046 — Email Alert Provider Abstraction
+
+Status: ACCEPTED (Session 7, verified Session 8)
+
+Outbound staff alerts live behind `lib/email/email.ts` (`sendEmail`), the only module that knows a
+provider. `EMAIL_MODE=mock` (the default) resolves successfully without any network call so local
+development and tests exercise the full workflow; `EMAIL_MODE=live` posts to the Resend REST API
+with `RESEND_API_KEY`, and missing credentials fail with a typed error instead of a network call.
+`sendEmail` never throws — it resolves `{ ok: false, error }` so an email outage can never break
+lead capture, AI analysis, or task creation.
+
+`lib/services/lead-alerts.ts` decides per lead: an alert fires when priority is HOT **or**
+follow-up priority is IMMEDIATE. With no `ALERT_RECIPIENT_EMAIL` configured the alert is skipped
+silently (alerts are enhancement, not core). Success and failure are recorded on the lead timeline
+as `EMAIL_ALERT_SENT` / `EMAIL_ALERT_FAILED`. Alert content is operational only (patient name,
+priority, score, treatment band, urgency, recommended action, CRM link, AI-review disclaimer) —
+never the enquiry body, medical history, prices, or contact details.
+
+Known limitation: `ALERT_RECIPIENT_EMAIL` is a single global mailbox. This matches the current
+single-clinic deployment; per-clinic alert routing is future work and MUST be added before
+multi-tenant alert delivery is advertised.
+
+No patient reply is ever sent automatically; the draft reply remains review-only text.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { ActivityType, LeadStatus } from "@/lib/generated/prisma/enums";
+import {
+  ActivityType,
+  FollowUpTaskStatus,
+  LeadStatus,
+} from "@/lib/generated/prisma/enums";
 
 export const updateLeadStatusSchema = z.object({
   leadId: z.string().min(1),
@@ -26,8 +30,15 @@ export const retryAnalysisSchema = z.object({
   leadId: z.string().min(1),
 });
 
+export const updateFollowUpTaskSchema = z.object({
+  leadId: z.string().min(1),
+  taskId: z.string().min(1),
+  status: z.enum([FollowUpTaskStatus.COMPLETED, FollowUpTaskStatus.OPEN, FollowUpTaskStatus.CANCELLED]),
+});
+
 export type UpdateLeadStatusInput = z.infer<typeof updateLeadStatusSchema>;
 export type CreateLeadNoteInput = z.infer<typeof createLeadNoteSchema>;
+export type UpdateFollowUpTaskInput = z.infer<typeof updateFollowUpTaskSchema>;
 
 /**
  * Activity types that can be produced by a status change.

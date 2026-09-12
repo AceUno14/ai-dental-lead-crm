@@ -2,26 +2,38 @@
 
 ## CURRENT EXECUTION
 
-Current Phase: MVP COMPLETE — deployed to Vercel against the production Neon database, with live AI
-qualification verified on a real production lead.
+Current Phase: PHASE 11 — DENTAL CONVERSION WORKFLOW (post-MVP). Implemented in session 7 and now
+fully verified on the DEVELOPMENT Neon database (sessions 11-12).
 
-Current Task: None — every task in this queue is DONE.
+Current Task: NONE on development. The only outstanding work is the deliberate PRODUCTION rollout of
+the two new migrations (`20260913000000_dental_conversion_workflow`,
+`20260913120000_fix_followup_analysis_fk`) — a user-owned action. Production has NOT been touched.
 
-Last Completed Task: T-039 (Deploy to Vercel), completed in session 5 once the production environment
-was configured. Previously: T-041 (End-to-End CRM Test), T-006, T-007 and T-040 were completed in
-session 2 after `DATABASE_URL` became available. Session 3 was a security remediation rather than a
-queued task: the hard-coded demo credential was removed from source, the seed was made
-production-safe, and the live Neon credential was revoked. Session 4 was a production AI integration
-fix rather than a queued task: the live-mode HTTP 404 was diagnosed to an invalid `AI_MODEL` value,
-provider error diagnostics were added, and a provider diagnostic script (`npm run verify:ai`) was
-introduced. Session 5 confirmed the deployment and the live-AI path in production. See the session 5
-note at the end of this file.
+Last Completed Task (session 12): complete verification loop on the development database — ALL
+CHECKS PASS; one real defect found and fixed.
 
-Blocked Tasks: None. T-039 was blocked in sessions 1-4 on Vercel account access and production
-environment values; the user supplied those and the deployment succeeded.
+- `npx tsc --noEmit` — PASS (exit 0); `npm run lint` — PASS (0 problems)
+- `npm run build` — PASS (compiled; TypeScript finished; 8/8 static pages, 9 routes)
+- `npm run verify:email` — PASS (all 6 sections, 16 checks)
+- `npm run verify:ai` — PASS (offline checks; live checks SKIP under AI_MODE=mock)
+- `npm run verify:ai -- --self-test` — PASS (15/15 loopback stub)
+- `npm run verify:e2e` — **PASS 59 checks, 0 failures** on the identity-verified development branch
+  (fingerprint 24ea81a95814), incl. dental fields, AI-task idempotency, staff completion +
+  no-resurrect, alert decisioning, timeline and followUpsDue
+- `npx tsx scripts/db-identity.mts e2e` — PASS (`inherited before loading: NO`; both named FKs
+  correct — analysis → `lead_analysis("leadId")`, lead → `lead(id)`)
+- Fixed: `npm run verify:email` failed with "DATABASE_URL is not configured" because
+  `scripts/verify-email-alerts.mts` was the only verify script that never loaded `.env.local`/`.env`,
+  and its section 3 imports the lead-alerts service, whose import chain builds the Prisma client.
+  Fixed by adding the standard `loadEnv` calls — no assertion changed, skipped or weakened.
 
-Next Eligible Task: None. The TASKS.md queue is exhausted; see `# WHEN MVP IS COMPLETE` at the end of
-this file before adding new scope. Do not invent Phase 11.
+Blocked Tasks:
+
+- Production migration rollout — `npx prisma migrate deploy` against PRODUCTION, deliberately, by
+  the user. Development is complete; production must not be touched without explicit authorization.
+
+Next Eligible Task: none on development. Optional follow-ups: the production `migrate deploy`, and
+the runtime cross-clinic check for the follow-up-task path noted under DC-013.
 
 Last Verification (session 5 — production deployment and live AI, PASS):
 
@@ -1983,6 +1995,104 @@ before persistence.
 
 Open items: none in the TASKS.md queue. Known residue from session 3 (the old demo credential still
 existing in git history, though inert) is unchanged and still requires a history rewrite to remove.
+
+---
+
+# PHASE 11 — DENTAL CONVERSION WORKFLOW (post-MVP, session 7)
+
+## DC-001 — Audit existing qualification fields
+
+Status: DONE
+
+Reused equivalents instead of duplicating: `leadScore`→score, `priority`→priority, `urgency`→urgency,
+`intent`→appointment intent, `serviceCategory`→treatment interest. New columns added only for the
+missing dental dimensions.
+
+## DC-002/DC-004 — Expand dental AI qualification schema + payment/insurance readiness
+
+Status: DONE — live path verified on the development database (session 12 `verify:e2e`)
+
+New enums (`TreatmentValuePotential`, `PainNeedLevel`, `InsuranceStatus`, `PaymentReadiness`,
+`FollowUpPriority`), `LeadUrgency`+=EMERGENCY/SOON, `ServiceCategory`+=CROWNS/VENEERS,
+`LeadAnalysis`+=6 defaulted columns. AI contract (`lib/ai/schema.ts`), prompt and mock analyzer
+rewritten; shared scoring in `lib/ai/scoring.ts` (25/20/20/15/10/10 weights, HOT≥80/WARM≥50).
+
+## DC-003 — Update dental scoring logic
+
+Status: DONE
+
+`lib/ai/scoring.ts` is the single source of truth used by mock mode and taught to the live prompt.
+Score clamped 1–100.
+
+## DC-005/DC-006 — Follow-up task persistence + AI-generated task
+
+Status: DONE (code)
+
+New `FollowUpTask` model (clinic-scoped; two named FKs on `leadId` → lead and lead_analysis),
+`lib/services/follow-up-tasks.ts` with idempotent `upsertAiFollowUpTask` (refreshes the one OPEN AI
+task; never resurrects COMPLETED). Wired into `runLeadAnalysis` failure-isolated.
+
+## DC-007 — Add staff task completion
+
+Status: DONE (code)
+
+`updateFollowUpTaskAction` + `setFollowUpTaskStatus` (COMPLETED/OPEN/CANCELLED, transactional,
+clinic-scoped, FOLLOW_UP_COMPLETED activity) + `components/leads/follow-up-task-card.tsx`.
+
+## DC-008/DC-009 — Email alert abstraction + HOT lead alert
+
+Status: DONE (code) — live Resend path untested (no credential)
+
+`lib/email/email.ts` (EMAIL_MODE mock/live, sendEmail never throws), `lib/services/lead-alerts.ts`
+(HOT or IMMEDIATE → alert; operational content only; EMAIL_ALERT_SENT/FAILED recorded; no recipient →
+skip), wired into the public submission after analysis, failure-isolated. Env:
+`EMAIL_MODE`, `RESEND_API_KEY`, `ALERT_FROM_EMAIL`, `ALERT_RECIPIENT_EMAIL` (placeholders only).
+
+## DC-010 — Update dashboard
+
+Status: DONE (code)
+
+`followUpsDue` metric, "Open follow-ups" list (overdue highlighted), urgency on recent leads.
+
+## DC-011 — Update lead detail
+
+Status: DONE (code)
+
+Qualification grid, follow-up window, task card, new timeline labels.
+
+## DC-012 — Add timeline events
+
+Status: DONE (code)
+
+`FOLLOW_UP_CREATED`, `FOLLOW_UP_COMPLETED`, `EMAIL_ALERT_SENT`, `EMAIL_ALERT_FAILED` added to the
+enum, recorder, and timeline UI.
+
+## DC-013 — Tenant isolation verification
+
+Status: DONE (static/code audit) — plus runtime lead-level tenant isolation on the DEVELOPMENT
+database (session 12 `verify:e2e` section 5: a second clinic can neither read the lead nor list it).
+The follow-up-task-level path (a task id guessed from another clinic) still has no runtime assertion
+in the e2e suite and rests on the static audit below.
+
+STATIC TENANT AUDIT (session 8): PASS. Every new read/write path is scoped server-side:
+`upsertAiFollowUpTask` (clinicId in create/find), `setFollowUpTaskStatus`
+(findFirst on id + leadId + clinicId; update by found id), `listLeadFollowUpTasks`
+(where clinicId+leadId), `listClinicFollowUps` (where clinicId, OPEN only), dashboard
+`followUpsDue` count (clinicId), lead detail `tasks` include (loaded via the already
+clinic-scoped `getClinicLeadDetail`), `updateFollowUpTaskAction` (clinic from
+`requireClinicContext()`, never the browser), alert path (clinicId from the lead row itself; a
+single global ALERT_RECIPIENT_EMAIL mailbox — per-clinic routing documented as a limitation in
+D-046). Guessing task IDs yields "Follow-up task not found." — no data crosses tenants. No client
+component imports database code.
+
+## DC-014 — End-to-end conversion workflow QA
+
+Status: DONE (development database) — both migrations are applied to the development branch and
+`npm run verify:e2e` is **PASS 59 checks, 0 failures** (session 12), covering the full conversion
+workflow: dental fields, AI-task idempotency, staff completion + no-resurrect, alert decisioning,
+timeline and `followUpsDue`. `npm run db:seed` was deliberately NOT run — it replaces the demo clinic
+and would delete existing development data, and the e2e suite creates and cleans up its own records.
+Production rollout of the two migrations remains the user's deliberate action.
 
 ---
 
