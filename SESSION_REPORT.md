@@ -4,6 +4,84 @@ Most recent session first.
 
 ---
 
+# SESSION 13 — DEBUG LOOP ON DEVELOPMENT: ALL GREEN, NO FAILURES TO FIX
+
+Date: 2026-09-13 · Scope: run the prescribed debug loop (`tsc --noEmit`, `lint`, `build`,
+`verify:e2e`) against the DEVELOPMENT Neon branch, fixing the first root failure and repeating until
+green · STATUS: **ALL FOUR CHECKS PASS. No code changes required. Production untouched. Nothing
+committed, pushed or deployed.**
+
+## Debug loop result
+
+Every command was run with `DATABASE_URL` **unset** in that shell, so `.env.local` is authoritative.
+The inherited-`DATABASE_URL` trap is still live at the OS/user level and was detected again (see
+below), so each DB-touching command explicitly cleared it.
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | **PASS** — exit 0 |
+| `npm run lint` | **PASS** — exit 0, 0 problems |
+| `npm run build` | **PASS** — exit 0; compiled, TypeScript finished, 8/8 static pages, 9 routes |
+| `npm run verify:e2e` | **PASS** — **59 checks, 0 failures** (exit 0) |
+
+No failure was found, so no fix was attempted and no source, schema, migration, test or
+configuration file was modified. The debug loop required zero iterations this session.
+
+## Environment trap — still present
+
+```
+DATABASE_URL inherited before loading: YES
+inherited fingerprint: 46bfa2c59fb1   (production endpoint)
+.env.local fingerprint: 24ea81a95814  (development endpoint)
+DB FINGERPRINT (with DATABASE_URL unset): 24ea81a95814
+```
+
+A plain `npx prisma ...` invocation therefore targets the **production** endpoint, not `.env.local`.
+Every development check above was run with the variable cleared to avoid the same contradictory
+results recorded in session 11.
+
+## Read-only production inspection (evidence only — no write)
+
+The inherited endpoint was inspected read-only (SELECTs over `_prisma_migrations`, `pg_constraint`,
+row counts; no DDL/DML). Its host and region match the endpoint already recorded as PRODUCTION.
+
+- `npx prisma migrate status` → **3 migrations found; only `20260913120000_fix_followup_analysis_fk`
+  not yet applied** — identical to the last recorded human read-only check.
+- Applied: `20260911000000_init` (`finished=2026-09-10T21:34:53Z`),
+  `20260913000000_dental_conversion_workflow` (`finished=2026-09-12T17:51:59Z`, not rolled back).
+- **The production `follow_up_task_analysis_fkey` is already correct**:
+  `FOREIGN KEY ("leadId") REFERENCES lead_analysis("leadId") ON UPDATE CASCADE ON DELETE CASCADE`
+  (`convalidated=true`); `follow_up_task_lead_fkey` is also correct. 0 orphaned task rows.
+- Row counts: `lead` 12, `clinic` 2, `user` 2, `follow_up_task` 5.
+
+**Why the corrective migration is pending while the FK is already correct.** The stored checksum of
+`20260913000000_dental_conversion_workflow` on production (`5abbb2ca6a67de9533c9adfbc545854cdf0ea5a41bf4f6af50032c67914c7535`)
+**matches the committed `migration.sql` exactly** — i.e. production was migrated *after* the session-10
+one-line correction, so that migration already created the FK against `lead_analysis("leadId")`.
+The older development endpoint (24ea) had been migrated *before* the correction, which is why it
+needed `20260913120000_fix_followup_analysis_fk`; production does not.
+
+Applying `20260913120000_fix_followup_analysis_fk` to production would therefore be a
+schema-neutral history reconciliation (drop + identical re-add of one FK on a 5-row table). It has
+**not** been applied: per the standing rule, any production write requires explicit user approval
+first. No Vercel environment variable was read or changed.
+
+## Files changed
+
+| File | Change |
+| --- | --- |
+| `SESSION_REPORT.md` | This entry |
+
+Two throwaway inspection scripts were created under `scripts/` and deleted immediately after use;
+`git status` is clean and `scripts/` contains only the five committed scripts.
+
+## Secrets
+
+No secret value was printed — only SHA-256 fingerprint prefixes. `.env.local` was not modified and no
+credential appears in this entry.
+
+---
+
 # SESSION 12 — FULL VERIFICATION LOOP ON DEVELOPMENT: ALL GREEN
 
 Date: 2026-09-13 · Scope: run the complete verification suite against the DEVELOPMENT Neon branch,
