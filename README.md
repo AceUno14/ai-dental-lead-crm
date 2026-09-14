@@ -12,6 +12,15 @@ The project is designed as a portfolio-ready example of an AI-powered business a
 
 **Public patient form:** https://ai-dental-lead-crm.vercel.app/c/smileworks-dental
 
+## Key Highlights
+
+- AI-powered lead qualification with 0–100 scoring and HOT / WARM / COLD prioritization
+- Public patient enquiry form with insurance and payment-preference capture
+- CRM dashboard with lead pipeline, follow-up tasks, notes, and activity history
+- Multi-clinic authentication and workspace isolation
+- Reversible lead archiving with owner-only permanent deletion
+- Production deployment with PostgreSQL, Neon, Prisma, Better Auth, and Vercel
+
 ---
 
 # PRODUCT SCREENSHOTS
@@ -391,8 +400,8 @@ match the current environment.
 
 If a database was seeded by a revision that contained a hard-coded demo password, revoke it:
 
-npm run security:revoke-demo-credential              # dry run, prints what would change
-npm run security:revoke-demo-credential -- --apply   # deletes the credential and its sessions
+npm run security:revoke-demo-credential # dry run, prints what would change
+npm run security:revoke-demo-credential -- --apply # deletes the credential and its sessions
 
 That touches only the demo user's credential account and sessions; the clinic, leads, notes and
 activity timeline are left untouched.
@@ -490,15 +499,15 @@ without throwing into the lead pipeline.
 
 Email alerts are optional; the CRM works fully without them.
 
-EMAIL_MODE="mock"  (default; alerts resolve without any network call)
+EMAIL_MODE="mock" (default; alerts resolve without any network call)
 
-EMAIL_MODE="live"  (sends through the Resend API)
+EMAIL_MODE="live" (sends through the Resend API)
 
-RESEND_API_KEY     (required only for live mode)
+RESEND_API_KEY (required only for live mode)
 
-ALERT_FROM_EMAIL   (optional display sender, e.g. "Dental CRM <alerts@yourclinic.com>")
+ALERT_FROM_EMAIL (optional display sender, e.g. "Dental CRM <alerts@yourclinic.com>")
 
-ALERT_RECIPIENT_EMAIL  (clinic staff mailbox; when unset, alerts are skipped entirely)
+ALERT_RECIPIENT_EMAIL (clinic staff mailbox; when unset, alerts are skipped entirely)
 
 Behavior: an alert is sent when a lead qualifies HOT or its follow-up priority is IMMEDIATE.
 Alerts contain operational CRM data only (patient name, priority, score, treatment band, urgency,
