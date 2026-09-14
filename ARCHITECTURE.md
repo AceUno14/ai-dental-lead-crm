@@ -193,6 +193,10 @@ preferredContactMethod
 
 urgency
 
+patientInsuranceStatus  (optional; missing/invalid -> UNKNOWN)
+
+paymentPreference  (optional; missing/invalid -> UNKNOWN)
+
 message
 
 consent
@@ -311,6 +315,10 @@ submittedUrgency
 message
 
 consent
+
+patientInsuranceStatus  (PatientInsuranceStatus, default UNKNOWN — patient-reported)
+
+paymentPreference  (PaymentPreference, default UNKNOWN — patient-reported)
 
 status
 
@@ -528,6 +536,39 @@ recommendedFollowUpMinutes  (5-4320; drives the follow-up task dueAt)
 Scoring weights and bands live in lib/ai/scoring.ts (DECISIONS.md D-044): urgency 25,
 appointment intent 20, treatment value 20, pain/need 15, payment readiness 10,
 responsiveness 10; HOT ≥ 80, WARM ≥ 50, COLD < 50; score clamped 1-100.
+
+---
+
+# PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE
+
+The public enquiry form asks two OPTIONAL structured questions, stored on Lead (not LeadAnalysis)
+because the patient supplies them:
+
+PatientInsuranceStatus  (YES / NO / UNKNOWN)  -> Lead.patientInsuranceStatus
+
+PaymentPreference  (INSURANCE / SELF_PAY / FINANCING / UNKNOWN)  -> Lead.paymentPreference
+
+These are deliberately distinct from the AI interpretations:
+
+Patient-reported insurance (Lead)   !=  insuranceStatus (LeadAnalysis, AI interpretation)
+Payment preference (Lead)           !=  paymentReadiness (LeadAnalysis, AI interpretation)
+
+Both columns are NOT NULL DEFAULT UNKNOWN, so existing leads remain valid without a backfill and
+the migration is additive. Validation accepts only the supported enum values; an omitted, empty or
+null answer becomes UNKNOWN server-side.
+
+The explicit answers are passed to the analyzer through LeadPromptInput and rendered in the user
+prompt as unverified patient-reported facts. The prompt treats them as stronger evidence than
+free-text inference (YES -> HAS_INSURANCE, NO -> NO_INSURANCE, SELF_PAY -> READY,
+FINANCING/INSURANCE -> NEEDS_OPTIONS) but forbids claiming that eligibility, benefits, coverage,
+deductibles or authorisation were verified.
+
+Scoring is unchanged (D-044): the answers influence scoring only through insuranceStatus and
+paymentReadiness, so urgency and appointment intent stay dominant. Insurance is never required for
+a HOT lead and FINANCING is never treated as a penalty.
+
+The CRM shows the two patient answers under "Original enquiry" as "Patient input (unverified)",
+visually separate from the AI qualification panel. See DECISIONS.md D-047.
 
 ---
 

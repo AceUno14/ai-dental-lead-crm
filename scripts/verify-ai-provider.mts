@@ -38,6 +38,10 @@ import {
   sanitizeProviderText,
 } from "@/lib/ai/client";
 import { parseLeadAnalysis } from "@/lib/ai/schema";
+import { generateMockAnalysis } from "@/lib/ai/mock";
+import { buildLeadUserPrompt, type LeadPromptInput } from "@/lib/ai/prompt";
+import { scoreDentalLead } from "@/lib/ai/scoring";
+import { publicLeadSchema } from "@/lib/validation/lead";
 
 let failures = 0;
 
@@ -184,6 +188,189 @@ function checkErrorSanitisation() {
     pass("near-miss model ids are suggested", suggestions.join(", "));
   } else {
     fail("near-miss model ids are suggested", suggestions.join(", ") || "none");
+  }
+}
+
+/**
+ * Offline regression checks for the two optional patient-reported answers
+ * added to the public enquiry form.
+ *
+ * These are pure-function assertions: no network, no database, no credentials.
+ * They pin the contract that an explicit patient answer is stronger evidence
+ * than free-text inference, and that a payment preference can never on its own
+ * push an urgent, high-intent lead down to COLD.
+ */
+function checkPatientAnswerQualification() {
+  console.log("\n2b. Patient-reported insurance + payment preference (offline)");
+
+  const baseLead = (overrides: Partial<LeadPromptInput> = {}): LeadPromptInput => ({
+    name: "Verification Patient",
+    serviceInterest: "dental_emergency",
+    preferredContactMethod: "PHONE",
+    submittedUrgency: "IMMEDIATE",
+    message: "I have severe tooth pain and swelling and need to be seen today.",
+    ...overrides,
+  });
+
+  const patientYes = generateMockAnalysis(
+    baseLead({ patientInsuranceStatus: "YES", paymentPreference: "SELF_PAY" }),
+  );
+
+  if (patientYes.insuranceStatus === "HAS_INSURANCE") {
+    pass("patient-reported insurance YES is analysed as HAS_INSURANCE");
+  } else {
+    fail("patient-reported insurance YES is analysed as HAS_INSURANCE", patientYes.insuranceStatus);
+  }
+
+  if (patientYes.paymentReadiness === "READY") {
+    pass("payment preference SELF_PAY is analysed as READY");
+  } else {
+    fail("payment preference SELF_PAY is analysed as READY", patientYes.paymentReadiness);
+  }
+
+  const patientNo = generateMockAnalysis(
+    baseLead({ patientInsuranceStatus: "NO", paymentPreference: "FINANCING" }),
+  );
+
+  if (patientNo.insuranceStatus === "NO_INSURANCE") {
+    pass("patient-reported insurance NO is analysed as NO_INSURANCE");
+  } else {
+    fail("patient-reported insurance NO is analysed as NO_INSURANCE", patientNo.insuranceStatus);
+  }
+
+  if (patientNo.paymentReadiness === "NEEDS_OPTIONS") {
+    pass("payment preference FINANCING is analysed as NEEDS_OPTIONS");
+  } else {
+    fail("payment preference FINANCING is analysed as NEEDS_OPTIONS", patientNo.paymentReadiness);
+  }
+
+  if (patientNo.priority !== "COLD") {
+    pass("FINANCING never forces an urgent high-intent lead to COLD", `priority=${patientNo.priority}`);
+  } else {
+    fail("FINANCING never forces an urgent high-intent lead to COLD", `priority=${patientNo.priority}`);
+  }
+
+  const explicitBeatsText = generateMockAnalysis(
+    baseLead({
+      patientInsuranceStatus: "YES",
+      message: "I do not have insurance and would like to know the price before booking.",
+    }),
+  );
+
+  if (explicitBeatsText.insuranceStatus === "HAS_INSURANCE") {
+    pass("an explicit answer outranks conflicting free-text inference");
+  } else {
+    fail(
+      "an explicit answer outranks conflicting free-text inference",
+      explicitBeatsText.insuranceStatus,
+    );
+  }
+
+  const userPrompt = buildLeadUserPrompt(
+    baseLead({ patientInsuranceStatus: "YES", paymentPreference: "FINANCING" }),
+  );
+
+  if (userPrompt.includes("Dental insurance: YES") && userPrompt.includes("Intended payment method: FINANCING")) {
+    pass("explicit patient answers reach the AI prompt");
+  } else {
+    fail("explicit patient answers reach the AI prompt", userPrompt.replace(/\n/g, " | "));
+  }
+
+  const uninsuredSelfPay = scoreDentalLead({
+    urgency: "EMERGENCY",
+    intent: "HIGH",
+    treatmentValuePotential: "MEDIUM",
+    painNeedLevel: "HIGH",
+    insuranceStatus: "NO_INSURANCE",
+    paymentReadiness: "NEEDS_OPTIONS",
+  });
+
+  if (uninsuredSelfPay.priority === "HOT") {
+    pass("insurance is not required for a HOT lead", `score=${uninsuredSelfPay.leadScore}`);
+  } else {
+    fail(
+      "insurance is not required for a HOT lead",
+      `score=${uninsuredSelfPay.leadScore} priority=${uninsuredSelfPay.priority}`,
+    );
+  }
+
+  const financingUrgent = scoreDentalLead({
+    urgency: "IMMEDIATE",
+    intent: "HIGH",
+    treatmentValuePotential: "MEDIUM",
+    painNeedLevel: "HIGH",
+    insuranceStatus: "UNKNOWN",
+    paymentReadiness: "NEEDS_OPTIONS",
+  });
+
+  if (financingUrgent.priority !== "COLD" && financingUrgent.leadScore >= 50) {
+    pass("financing keeps an urgent high-intent lead at WARM or better", `score=${financingUrgent.leadScore}`);
+  } else {
+    fail(
+      "financing keeps an urgent high-intent lead at WARM or better",
+      `score=${financingUrgent.leadScore} priority=${financingUrgent.priority}`,
+    );
+  }
+
+  const requiredFields = {
+    name: "Verification Patient",
+    email: "verify@example.test",
+    phone: "555-0199",
+    serviceInterest: "cleaning",
+    preferredContactMethod: "EMAIL",
+    urgency: "THIS_WEEK",
+    message: "I would like to book a routine hygiene appointment.",
+    consent: true,
+  } as const;
+
+  const omitted = publicLeadSchema.safeParse({ ...requiredFields });
+
+  if (
+    omitted.success &&
+    omitted.data.patientInsuranceStatus === "UNKNOWN" &&
+    omitted.data.paymentPreference === "UNKNOWN"
+  ) {
+    pass("omitted patient answers safely become UNKNOWN");
+  } else {
+    fail("omitted patient answers safely become UNKNOWN", JSON.stringify(omitted.success ? omitted.data : omitted.error.issues));
+  }
+
+  const emptyStrings = publicLeadSchema.safeParse({
+    ...requiredFields,
+    patientInsuranceStatus: "",
+    paymentPreference: "",
+  });
+
+  if (
+    emptyStrings.success &&
+    emptyStrings.data.patientInsuranceStatus === "UNKNOWN" &&
+    emptyStrings.data.paymentPreference === "UNKNOWN"
+  ) {
+    pass("an empty select value safely becomes UNKNOWN");
+  } else {
+    fail("an empty select value safely becomes UNKNOWN", JSON.stringify(emptyStrings.success ? emptyStrings.data : emptyStrings.error.issues));
+  }
+
+  const invalid = publicLeadSchema.safeParse({
+    ...requiredFields,
+    patientInsuranceStatus: "MAYBE",
+  });
+
+  if (!invalid.success) {
+    pass("an unsupported insurance value is rejected");
+  } else {
+    fail("an unsupported insurance value is rejected", invalid.data.patientInsuranceStatus);
+  }
+
+  const invalidPayment = publicLeadSchema.safeParse({
+    ...requiredFields,
+    paymentPreference: "CRYPTO",
+  });
+
+  if (!invalidPayment.success) {
+    pass("an unsupported payment preference is rejected");
+  } else {
+    fail("an unsupported payment preference is rejected", invalidPayment.data.paymentPreference);
   }
 }
 
@@ -627,6 +814,7 @@ async function main() {
 
   checkUrlConstruction();
   checkErrorSanitisation();
+  checkPatientAnswerQualification();
   await checkConfiguredProvider();
 
   if (probe) {

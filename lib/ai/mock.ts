@@ -170,6 +170,29 @@ function derivePainNeed(haystack: string, emergencyHits: string[]): LeadAnalysis
   return "LOW";
 }
 
+/**
+ * Insurance interpretation.
+ *
+ * An explicit patient-reported answer (YES/NO) is stronger evidence than
+ * free-text inference, so it is used first. UNKNOWN — including an omitted
+ * answer — falls back to the message heuristic. This is never a verified
+ * benefits check: it only records what the patient reported.
+ */
+function deriveInsuranceStatus(
+  patientAnswer: string | undefined,
+  haystack: string,
+): LeadAnalysisResult["insuranceStatus"] {
+  if (patientAnswer === "YES") {
+    return "HAS_INSURANCE";
+  }
+
+  if (patientAnswer === "NO") {
+    return "NO_INSURANCE";
+  }
+
+  return deriveInsurance(haystack);
+}
+
 function deriveInsurance(haystack: string): LeadAnalysisResult["insuranceStatus"] {
   if (matchesAny(haystack, ["i have insurance", "my insurance", "we have insurance", "i'm insured", "i am insured", "covered by"]).length > 0) {
     return "HAS_INSURANCE";
@@ -183,9 +206,21 @@ function deriveInsurance(haystack: string): LeadAnalysisResult["insuranceStatus"
 }
 
 function derivePaymentReadiness(
+  paymentPreference: string | undefined,
   haystack: string,
   insuranceStatus: LeadAnalysisResult["insuranceStatus"],
 ): LeadAnalysisResult["paymentReadiness"] {
+  // The patient's explicit payment preference is patient-reported evidence and
+  // takes priority over free-text inference. FINANCING maps to NEEDS_OPTIONS,
+  // never to a penalty: urgency and appointment intent stay the dominant signals.
+  if (paymentPreference === "SELF_PAY") {
+    return "READY";
+  }
+
+  if (paymentPreference === "FINANCING" || paymentPreference === "INSURANCE") {
+    return "NEEDS_OPTIONS";
+  }
+
   if (matchesAny(haystack, ["ready to proceed", "ready to book", "ready to go ahead", "let's book", "lets book", "i want to book", "book me in"]).length > 0) {
     return "READY";
   }
@@ -218,8 +253,12 @@ export function generateMockAnalysis(lead: LeadPromptInput): LeadAnalysisResult 
       ? "MEDIUM"
       : (TREATMENT_VALUE_MAP[serviceCategory] ?? "UNKNOWN");
   const painNeedLevel = derivePainNeed(haystack, emergencyHits);
-  const insuranceStatus = deriveInsurance(haystack);
-  const paymentReadiness = derivePaymentReadiness(haystack, insuranceStatus);
+  const insuranceStatus = deriveInsuranceStatus(lead.patientInsuranceStatus, haystack);
+  const paymentReadiness = derivePaymentReadiness(
+    lead.paymentPreference,
+    haystack,
+    insuranceStatus,
+  );
 
   const { leadScore, priority, followUpPriority, recommendedFollowUpMinutes } =
     scoreDentalLead({
@@ -247,12 +286,15 @@ export function generateMockAnalysis(lead: LeadPromptInput): LeadAnalysisResult 
     insuranceStatus,
     paymentReadiness,
     emergencyHits,
+    patientInsuranceStatus: lead.patientInsuranceStatus,
+    paymentPreference: lead.paymentPreference,
   });
   const recommendedAction = buildRecommendedAction({
     urgency,
     intent,
     serviceCategory,
     paymentReadiness,
+    paymentPreference: lead.paymentPreference,
     recommendedFollowUpMinutes: timing.recommendedFollowUpMinutes,
   });
 
@@ -272,6 +314,34 @@ export function generateMockAnalysis(lead: LeadPromptInput): LeadAnalysisResult 
     recommendedAction,
     draftReply: buildDraftReply(lead),
   };
+}
+
+/**
+ * Restates the explicit patient-reported answers so staff can see that the
+ * qualification was informed by them. Always phrased as patient-reported and
+ * never as a verified coverage statement.
+ */
+function describePatientAnswers(
+  patientInsuranceStatus: string | undefined,
+  paymentPreference: string | undefined,
+): string {
+  const parts: string[] = [];
+
+  if (patientInsuranceStatus === "YES") {
+    parts.push("The patient reported having dental insurance (unverified).");
+  } else if (patientInsuranceStatus === "NO") {
+    parts.push("The patient reported having no dental insurance.");
+  }
+
+  if (paymentPreference === "FINANCING") {
+    parts.push("They expect to use a payment plan, so payment options should be offered.");
+  } else if (paymentPreference === "SELF_PAY") {
+    parts.push("They expect to pay for treatment themselves.");
+  } else if (paymentPreference === "INSURANCE") {
+    parts.push("They expect insurance to be part of the payment.");
+  }
+
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
 function describePayment(
@@ -307,6 +377,8 @@ function buildSummary(input: {
   insuranceStatus: LeadAnalysisResult["insuranceStatus"];
   paymentReadiness: LeadAnalysisResult["paymentReadiness"];
   emergencyHits: string[];
+  patientInsuranceStatus?: string;
+  paymentPreference?: string;
 }): string {
   const {
     lead,
@@ -333,7 +405,7 @@ function buildSummary(input: {
         ? " The enquiry mentions ongoing discomfort or a worsening concern."
         : "";
 
-  return `Submitted enquiry (mock analysis) about ${categoryText} with ${urgencyText.toLowerCase()} response need, appointment intent ${intent.toLowerCase()}, and ${treatmentValuePotential.toLowerCase()} treatment value potential. The visitor ${urgencyText === "emergency" ? "needs urgent attention" : `wants contact ${urgencyText}`}${intentText}.${painText}${describePayment(input.insuranceStatus, input.paymentReadiness)}${
+  return `Submitted enquiry (mock analysis) about ${categoryText} with ${urgencyText.toLowerCase()} response need, appointment intent ${intent.toLowerCase()}, and ${treatmentValuePotential.toLowerCase()} treatment value potential. The visitor ${urgencyText === "emergency" ? "needs urgent attention" : `wants contact ${urgencyText}`}${intentText}.${painText}${describePatientAnswers(input.patientInsuranceStatus, input.paymentPreference)}${describePayment(input.insuranceStatus, input.paymentReadiness)}${
     lead.message.trim().length > 0 ? " Original message is available in the lead record." : ""
   }${emergencyHits.length > 0 ? " The enquiry contains emergency signals that staff should clarify by phone." : ""}`;
 }
@@ -343,16 +415,23 @@ function buildRecommendedAction(input: {
   intent: Intent;
   serviceCategory: LeadAnalysisResult["serviceCategory"];
   paymentReadiness: LeadAnalysisResult["paymentReadiness"];
+  paymentPreference?: string;
   recommendedFollowUpMinutes: number;
 }): string {
   const { urgency, intent, serviceCategory, paymentReadiness, recommendedFollowUpMinutes } = input;
   const categoryText = serviceCategory.toLowerCase().replace(/_/g, " ");
 
   if (urgency === "EMERGENCY") {
+    // The patient's own preference decides what staff should be ready to
+    // discuss — never a coverage promise.
     const paymentNote =
-      paymentReadiness === "NEEDS_OPTIONS"
-        ? " and confirm any insurance details on the call"
-        : "";
+      input.paymentPreference === "FINANCING"
+        ? " and be ready to explain the clinic's payment-plan options"
+        : input.paymentPreference === "SELF_PAY"
+          ? " and be ready to explain self-pay pricing"
+          : paymentReadiness === "NEEDS_OPTIONS"
+            ? " and ask for the insurance details the patient reported"
+            : "";
 
     return `Call within ${recommendedFollowUpMinutes} minutes and offer the earliest available emergency appointment${paymentNote}.`;
   }

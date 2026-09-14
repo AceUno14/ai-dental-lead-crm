@@ -31,7 +31,8 @@ Public Dental Lead Form
 → Treatment Interest / Value
 → Pain / Need
 → Appointment Intent
-→ Insurance / Payment Readiness
+→ Patient-reported Insurance / Payment Preference (explicit form answers)
+→ Insurance / Payment Readiness (AI interpretation)
 → Recommended Action
 → Follow-up Task (AI-recommended, idempotent)
 → Email Alert (HOT / IMMEDIATE, best-effort)
@@ -223,6 +224,17 @@ painNeedLevel  (HIGH/MEDIUM/LOW/UNKNOWN — strength of stated need, not a diagn
 insuranceStatus  (HAS_INSURANCE/NO_INSURANCE/UNKNOWN — never guessed)
 
 paymentReadiness  (READY/NEEDS_OPTIONS/PRICE_SENSITIVE/UNKNOWN)
+
+The AI also receives two patient-reported inputs that are NOT AI output and are stored on the lead:
+
+patientInsuranceStatus  (YES/NO/UNKNOWN — the patient's own answer, unverified)
+
+paymentPreference  (INSURANCE/SELF_PAY/FINANCING/UNKNOWN — how the patient expects to pay)
+
+An explicit answer is stronger evidence than free-text inference (YES → HAS_INSURANCE,
+NO → NO_INSURANCE, SELF_PAY → READY, FINANCING/INSURANCE → NEEDS_OPTIONS), but it never verifies
+eligibility, benefits, coverage, deductibles or authorisation. Payment preference is a different
+concept from paymentReadiness and the two are shown separately in the CRM.
 
 followUpPriority  (IMMEDIATE/HIGH/NORMAL/LOW)
 
@@ -445,8 +457,15 @@ Collect:
 - Service Interest
 - Preferred Contact Method
 - Urgency
+- Do you have dental insurance? (optional; YES / NO / Not sure)
+- How are you planning to pay? (optional; Insurance / Self-pay / Financing / Not sure)
 - Message
 - Consent
+
+The two insurance/payment questions are OPTIONAL and patient-reported. They are stored on Lead as
+`patientInsuranceStatus` and `paymentPreference` and are deliberately separate from the AI's
+`insuranceStatus` / `paymentReadiness`. Nothing about coverage is verified, and the AI must not
+claim it is. See DECISIONS.md D-047.
 
 Do not collect unnecessary medical history.
 

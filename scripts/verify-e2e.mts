@@ -54,6 +54,9 @@ async function main() {
   const marker = Date.now().toString(36);
   let leadId: string | null = null;
   let tempClinicId: string | null = null;
+  // Leads created by the patient-answer matrix below, cleaned up in `finally`.
+  const extraLeadIds: string[] = [];
+  let answerCaseCounter = 0;
 
   try {
     console.log("\n1. Visitor submits the public enquiry form");
@@ -72,6 +75,9 @@ async function main() {
       serviceInterest: "dental_emergency",
       preferredContactMethod: "PHONE",
       urgency: "IMMEDIATE",
+      // The optional patient-reported answers are included in the main flow.
+      patientInsuranceStatus: "YES",
+      paymentPreference: "SELF_PAY",
       message: "I have severe tooth pain that started last night and my face is swollen.",
       consent: true,
     });
@@ -150,6 +156,128 @@ async function main() {
       !!stored && (stored.priority === "HOT" || stored.followUpPriority === "IMMEDIATE"),
       stored ? `priority=${stored.priority} followUp=${stored.followUpPriority}` : undefined,
     );
+
+    console.log("\n2c. Patient-reported insurance and payment preference");
+
+    /** Submits one extra enquiry through the real schema + service. */
+    const submitAnswerCase = async (overrides: Record<string, unknown>) => {
+      answerCaseCounter += 1;
+      const parsed = publicLeadSchema.safeParse({
+        name: "E2E Patient Answer Case",
+        email: `e2e-answers-${marker}-${answerCaseCounter}@example.test`,
+        phone: "555-0101",
+        serviceInterest: "cleaning",
+        preferredContactMethod: "EMAIL",
+        urgency: "THIS_WEEK",
+        message: "I would like to book a routine hygiene appointment sometime soon.",
+        consent: true,
+        ...overrides,
+      });
+
+      if (!parsed.success) {
+        return { ok: false as const, error: "schema rejected the submission" };
+      }
+
+      const created = await createPublicLead({ clinicId: clinic.id, data: parsed.data });
+      extraLeadIds.push(created.id);
+      return { ok: true as const, lead: created };
+    };
+
+    check(
+      "insurance YES persists on the lead",
+      lead.patientInsuranceStatus === "YES",
+      lead.patientInsuranceStatus,
+    );
+    check(
+      "payment preference SELF_PAY persists on the lead",
+      lead.paymentPreference === "SELF_PAY",
+      lead.paymentPreference,
+    );
+    check(
+      "explicit insurance YES reaches the AI as HAS_INSURANCE",
+      stored?.insuranceStatus === "HAS_INSURANCE",
+      stored?.insuranceStatus,
+    );
+    check(
+      "SELF_PAY preference reaches the AI as READY readiness",
+      stored?.paymentReadiness === "READY",
+      stored?.paymentReadiness,
+    );
+
+    const insuranceNo = await submitAnswerCase({ patientInsuranceStatus: "NO" });
+    check(
+      "insurance NO persists on the lead",
+      insuranceNo.ok && insuranceNo.lead.patientInsuranceStatus === "NO",
+      insuranceNo.ok ? insuranceNo.lead.patientInsuranceStatus : insuranceNo.error,
+    );
+
+    if (insuranceNo.ok) {
+      await runLeadAnalysis(insuranceNo.lead);
+      const noAnalysis = await prisma.leadAnalysis.findUnique({
+        where: { leadId: insuranceNo.lead.id },
+      });
+      check(
+        "explicit insurance NO reaches the AI as NO_INSURANCE",
+        noAnalysis?.insuranceStatus === "NO_INSURANCE",
+        noAnalysis?.insuranceStatus,
+      );
+    }
+
+    const answersOmitted = await submitAnswerCase({});
+    check(
+      "omitted insurance becomes UNKNOWN",
+      answersOmitted.ok && answersOmitted.lead.patientInsuranceStatus === "UNKNOWN",
+      answersOmitted.ok ? answersOmitted.lead.patientInsuranceStatus : answersOmitted.error,
+    );
+    check(
+      "omitted payment preference becomes UNKNOWN",
+      answersOmitted.ok && answersOmitted.lead.paymentPreference === "UNKNOWN",
+      answersOmitted.ok ? answersOmitted.lead.paymentPreference : answersOmitted.error,
+    );
+    check(
+      "a submission without the new fields stays valid (existing clients)",
+      answersOmitted.ok,
+      answersOmitted.ok ? undefined : answersOmitted.error,
+    );
+
+    const urgentFinancing = await submitAnswerCase({
+      patientInsuranceStatus: "NO",
+      paymentPreference: "FINANCING",
+      serviceInterest: "dental_emergency",
+      urgency: "IMMEDIATE",
+      message:
+        "I have severe tooth pain and swelling and need to be seen today. I would need a payment plan.",
+    });
+    check(
+      "payment preference FINANCING persists on the lead",
+      urgentFinancing.ok && urgentFinancing.lead.paymentPreference === "FINANCING",
+      urgentFinancing.ok ? urgentFinancing.lead.paymentPreference : urgentFinancing.error,
+    );
+
+    if (urgentFinancing.ok) {
+      const run = await runLeadAnalysis(urgentFinancing.lead);
+      const urgentAnalysis = await prisma.leadAnalysis.findUnique({
+        where: { leadId: urgentFinancing.lead.id },
+      });
+
+      check("financing lead still qualifies", run.ok, run.ok ? undefined : run.error);
+      check(
+        "FINANCING maps to payment readiness needs-options",
+        urgentAnalysis?.paymentReadiness === "NEEDS_OPTIONS",
+        urgentAnalysis?.paymentReadiness,
+      );
+      check(
+        "financing never forces an urgent high-intent lead to COLD",
+        urgentAnalysis !== null && urgentAnalysis.priority !== "COLD",
+        urgentAnalysis?.priority,
+      );
+      check(
+        "urgent financing lead keeps an immediate/high follow-up",
+        urgentAnalysis !== null &&
+          ["IMMEDIATE", "HIGH"].includes(urgentAnalysis.followUpPriority),
+        urgentAnalysis?.followUpPriority,
+      );
+    }
 
     console.log("\n3. Lead appears in the CRM");
 
@@ -375,6 +503,9 @@ async function main() {
     // Keep the development database clean: the seed owns the demo data.
     if (leadId) {
       await prisma.lead.delete({ where: { id: leadId } }).catch(() => {});
+    }
+    for (const extraId of extraLeadIds) {
+      await prisma.lead.delete({ where: { id: extraId } }).catch(() => {});
     }
     if (tempClinicId) {
       await prisma.clinic.delete({ where: { id: tempClinicId } }).catch(() => {});

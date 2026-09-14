@@ -127,15 +127,20 @@ export function AiAnalysisPanel({
           <QualificationRow label="Pain / need" value={analysis.painNeedLevel} />
           <QualificationRow label="Appointment intent" value={analysis.intent} />
           <QualificationRow
-            label="Insurance"
+            label="Insurance interpretation"
             value={analysis.insuranceStatus.replace(/_/g, " ").toLowerCase()}
           />
           <QualificationRow
-            label="Payment readiness"
+            label="Payment readiness (AI)"
             value={analysis.paymentReadiness.replace(/_/g, " ").toLowerCase()}
           />
           <QualificationRow label="Model" value={analysis.model ?? "unknown"} />
         </div>
+
+        <p className="text-xs text-slate-500">
+          These are AI interpretations of the enquiry. The patient&apos;s own insurance and payment
+          answers are shown separately under “Original enquiry”, and are never verified coverage.
+        </p>
 
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Summary</h3>

@@ -69,6 +69,12 @@ export const PAIN_NEED_POINTS: Record<LeadAnalysisResult["painNeedLevel"], numbe
  * Payment readiness contributes to the score, but never punishes a patient
  * for lacking insurance: NO_INSURANCE with READY intent still scores well and
  * routes to a financing-first follow-up instead of a lower priority.
+ *
+ * The public form's explicit patient-reported answers (patientInsuranceStatus,
+ * paymentPreference) flow into scoring through these two dimensions only. No
+ * new weight was added, so urgency (25) plus appointment intent (20) stay the
+ * dominant signals and a patient who requests financing can never be pushed
+ * from HOT to COLD by their payment preference alone.
  */
 export const PAYMENT_READINESS_POINTS: Record<
   LeadAnalysisResult["paymentReadiness"],

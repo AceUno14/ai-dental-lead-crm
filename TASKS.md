@@ -2,12 +2,46 @@
 
 ## CURRENT EXECUTION
 
-Current Phase: PHASE 11 — DENTAL CONVERSION WORKFLOW (post-MVP). Implemented in session 7 and now
-fully verified on the DEVELOPMENT Neon database (sessions 11-12).
+Current Phase: PHASE 12 — PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE (session 14), which
+followed PHASE 11 — DENTAL CONVERSION WORKFLOW (session 7). Both are fully verified on the
+DEVELOPMENT database, and all migrations are now applied to PRODUCTION as well (session 16).
 
-Current Task: NONE on development. The only outstanding work is the deliberate PRODUCTION rollout of
-the two new migrations (`20260913000000_dental_conversion_workflow`,
-`20260913120000_fix_followup_analysis_fk`) — a user-owned action. Production has NOT been touched.
+Current Task: NONE. Development AND production are both fully migrated (see below). No outstanding
+work in the queue. Nothing is committed, pushed or deployed beyond what is recorded here.
+
+PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED (session 16, authorized rollout):
+
+- Identity verified before the write: host `ep-mute-scene-b34nnrn8-pooler…` (production); DB
+  fingerprint `46bfa2c59fb1` — the inherited production value, distinct from `.env.local` =
+  development `24ea81a95814`. No credential was printed.
+- Applied on production (all four, none rolled back):
+  `20260911000000_init` (finished 2026-09-10T21:34:53.975Z),
+  `20260913000000_dental_conversion_workflow` (finished 2026-09-12T17:51:59.190Z),
+  `20260913120000_fix_followup_analysis_fk` (recorded 2026-09-12T22:11:01.578Z, applied_steps=0 —
+  reconciled, not executed; production's FK was already correct),
+  `20260914000000_patient_insurance_payment_preference` (finished 2026-09-14T10:28:22.050Z,
+  applied_steps=1).
+- Pending: NONE — `npx prisma migrate status` reports "Database schema is up to date!".
+- `Lead.patientInsuranceStatus` and `Lead.paymentPreference` now exist on production as NOT NULL
+  enum columns defaulting to `'UNKNOWN'`; all 13 pre-existing leads read `UNKNOWN`/`UNKNOWN` and no
+  row counts changed (lead 13, lead_analysis 12, follow_up_task 6, lead_note 4, lead_activity 60,
+  clinic 2, user 2 before and after).
+- `prisma migrate dev`, `db:seed`, `migrate resolve` and manual SQL were NOT run, and no Vercel
+  variable was read or changed.
+
+Last Completed Task (session 14): T-044 — patient-reported insurance + payment preference on the
+public enquiry form, end to end (form → Lead → AI → scoring → follow-up → CRM). ALL CHECKS GREEN.
+
+- Public form gained two OPTIONAL questions: "Do you have dental insurance?" (YES/NO/Not sure) and
+  "How are you planning to pay?" (Insurance/Self-pay/Financing/Not sure).
+- New additive migration `20260914000000_patient_insurance_payment_preference` adds
+  `Lead.patientInsuranceStatus` (`PatientInsuranceStatus`) and `Lead.paymentPreference`
+  (`PaymentPreference`), both `NOT NULL DEFAULT 'UNKNOWN'` — no backfill, existing leads untouched.
+- The explicit answers are passed to AI qualification as stronger evidence than free text, and are
+  kept strictly distinct from the AI's `insuranceStatus` / `paymentReadiness` everywhere.
+- CRM lead detail now shows "Patient input (unverified)" separately from the AI panel.
+- `npm run verify:e2e` — **PASS 73 checks, 0 failures** (was 59; 14 new patient-answer checks).
+- `npm run verify:ai` — PASS, including a new offline section for the patient answers.
 
 Last Completed Task (session 12): complete verification loop on the development database — ALL
 CHECKS PASS; one real defect found and fixed.
@@ -29,8 +63,9 @@ CHECKS PASS; one real defect found and fixed.
 
 Blocked Tasks:
 
-- Production migration rollout — `npx prisma migrate deploy` against PRODUCTION, deliberately, by
-  the user. Development is complete; production must not be touched without explicit authorization.
+- NONE. The production rollout of `20260914000000_patient_insurance_payment_preference` was
+  authorized and applied in session 16; production is now fully migrated and up to date.
+  Any further production write still requires explicit user authorization.
 
 Next Eligible Task: none on development. Optional follow-ups: the production `migrate deploy`, and
 the runtime cross-clinic check for the follow-up-task path noted under DC-013.
@@ -2093,6 +2128,55 @@ workflow: dental fields, AI-task idempotency, staff completion + no-resurrect, a
 timeline and `followUpsDue`. `npm run db:seed` was deliberately NOT run — it replaces the demo clinic
 and would delete existing development data, and the e2e suite creates and cleans up its own records.
 Production rollout of the two migrations remains the user's deliberate action.
+(CORRECTED session 15, read-only: both of those migrations are now applied/reconciled on
+production. The only migration still pending there is
+`20260914000000_patient_insurance_payment_preference`. The sentence above is left as the historical
+session-12 record; see CURRENT EXECUTION at the top of this file for the verified current state.)
+
+---
+
+# PHASE 12 — PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE (session 14)
+
+Context: live production testing showed the AI could only infer insurance/payment readiness from
+free text, which is unreliable. Structured, explicit, optional patient answers were added instead.
+
+## T-044 — Patient-reported insurance and payment preference
+
+Status: DONE (development and production; production migration applied in session 16 with explicit
+authorization)
+
+Scope delivered:
+
+- Public form: two OPTIONAL selects — "Do you have dental insurance?" (Yes / No / Not sure) and
+  "How are you planning to pay?" (Insurance / Self-pay / Financing / payment plan / Not sure).
+- Database: `PatientInsuranceStatus` (YES/NO/UNKNOWN) and `PaymentPreference`
+  (INSURANCE/SELF_PAY/FINANCING/UNKNOWN) enums; `Lead.patientInsuranceStatus` and
+  `Lead.paymentPreference`, both `NOT NULL DEFAULT 'UNKNOWN'`. Additive forward migration only;
+  existing migrations untouched. Applied to development in session 14 and to production in session 16
+  (authorized, verified).
+- Validation: `publicLeadSchema` accepts only supported enum values; omitted, empty or null answers
+  become UNKNOWN server-side, so existing clients stay compatible.
+- AI: explicit answers flow into `LeadPromptInput`, are rendered in the user prompt as unverified
+  patient-reported facts, and are treated as stronger evidence than free-text inference (YES →
+  HAS_INSURANCE, NO → NO_INSURANCE, SELF_PAY → READY, FINANCING/INSURANCE → NEEDS_OPTIONS). The
+  prompt forbids claiming eligibility, benefits, coverage, deductibles or authorisation.
+- Scoring: unchanged weights (D-044). Payment preference cannot dominate urgency/appointment intent,
+  insurance is never required for HOT, and FINANCING is never a penalty.
+- CRM: lead detail shows the two patient answers under "Patient input (unverified)" in the Original
+  enquiry card; the AI panel relabels its rows "Insurance interpretation" and "Payment readiness
+  (AI)" and states that the patient answers are unverified. Patient-reported values are never
+  presented as verified coverage.
+
+Verification: `npx prisma format` / `validate` / `generate` PASS; typecheck PASS; lint PASS; build
+PASS; `verify:email` PASS; `verify:ai` (+ `--self-test`) PASS; `verify:e2e` **73 checks, 0
+failures** on the identity-verified development branch (fingerprint 24ea81a95814).
+
+Production rollout (session 16): identity re-verified first (production fingerprint `46bfa2c59fb1`),
+pre-flight confirmed exactly one pending migration and an additive-only migration file (2
+`CREATE TYPE` + 1 `ALTER TABLE "lead" ADD COLUMN`, no DROP/DELETE/TRUNCATE), then
+`npx prisma migrate deploy` applied it. After: `npx prisma migrate status` reports "Database schema
+is up to date!"; both columns exist as NOT NULL enum columns defaulting to `'UNKNOWN'`; all 13
+existing leads read `UNKNOWN`; every table's row count is unchanged.
 
 ---
 

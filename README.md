@@ -374,11 +374,21 @@ follow-up task creation and retry idempotency (no duplicate open tasks, no resur
 completed ones), staff task completion, email alert decisioning and content, and the new
 activity timeline events.
 
-MIGRATION REQUIREMENT: the dental conversion migration
-`prisma/migrations/20260913000000_dental_conversion_workflow` must be applied to the database
-BEFORE running `verify:e2e`, `db:seed`, or using the follow-up task / email alert workflow against
-that database. The migration is additive (new enums, new defaulted LeadAnalysis columns, new
-`follow_up_task` table) and requires no data changes.
+The patient-reported answer sections verify the public form's two optional questions end to end:
+insurance YES/NO/omitted and payment preference SELF_PAY/FINANCING/omitted persist correctly
+(omitted or empty safely becomes `UNKNOWN`), an explicit answer reaches AI qualification, a
+financing request never turns an urgent high-intent lead COLD, and a submission without the new
+fields still works. The offline half of this (scoring, prompt and enum validation) runs without a
+database in `npm run verify:ai`.
+
+MIGRATION REQUIREMENT: the dental conversion migrations
+`prisma/migrations/20260913000000_dental_conversion_workflow`,
+`prisma/migrations/20260913120000_fix_followup_analysis_fk` and
+`prisma/migrations/20260914000000_patient_insurance_payment_preference` must be applied to the
+database BEFORE running `verify:e2e`, `db:seed`, or using the follow-up task / email alert /
+patient-reported answer workflow against that database. Every migration is additive (new enums,
+new defaulted LeadAnalysis/Lead columns, new `follow_up_task` table) and requires no data changes
+and no backfill.
 
 ---
 

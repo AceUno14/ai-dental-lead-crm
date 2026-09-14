@@ -28,6 +28,10 @@ export async function createPublicLead(input: {
         preferredContactMethod: data.preferredContactMethod,
         submittedUrgency: data.urgency,
         message: data.message,
+        // Optional patient-reported answers. The schema already normalises a
+        // missing or unsupported answer to UNKNOWN.
+        patientInsuranceStatus: data.patientInsuranceStatus,
+        paymentPreference: data.paymentPreference,
         consent: data.consent,
       },
     });

@@ -7,6 +7,14 @@ export type LeadPromptInput = {
   preferredContactMethod: string;
   submittedUrgency: string;
   message: string;
+  /**
+   * Optional patient-reported answer from the public enquiry form
+   * (YES | NO | UNKNOWN). Optional so older callers stay compatible; the
+   * runtime always supplies it from the Lead row.
+   */
+  patientInsuranceStatus?: string;
+  /** Patient-reported payment preference (INSURANCE | SELF_PAY | FINANCING | UNKNOWN). */
+  paymentPreference?: string;
 };
 
 const URGENCY_KEYS = "EMERGENCY | IMMEDIATE | TODAY | THIS_WEEK | SOON | FLEXIBLE | UNKNOWN";
@@ -22,6 +30,7 @@ ALLOWED:
 - categorising the requested dental treatment interest
 - estimating the commercial treatment value band
 - assessing the strength of the patient's stated need
+- using the explicit patient-reported insurance and payment preference answers
 - noting insurance/payment readiness signals
 - recommending how quickly staff should follow up
 - summarising the enquiry factually
@@ -35,6 +44,7 @@ STRICTLY FORBIDDEN:
 - Do not claim certainty about the person's condition.
 - Do not invent prices, insurance coverage, or facts the enquiry does not contain.
 - Do not promise an appointment time or treatment outcome.
+- Do not state or imply that insurance eligibility, benefits, procedure coverage, deductibles or prior authorisation have been verified. The patient-reported answers are unverified.
 
 FIELD DEFINITIONS:
 - urgency: "How quickly should staff respond?" (NOT clinical severity). Use EMERGENCY only for severe emergency signals such as severe pain, swelling, trauma, knocked-out or broken tooth, inability to eat or sleep. IMMEDIATE means the person wants contact today as a matter of urgency. Routine enquiries are THIS_WEEK, SOON, FLEXIBLE or UNKNOWN.
@@ -42,8 +52,10 @@ FIELD DEFINITIONS:
 - serviceCategory (treatment interest): the treatment the enquiry is about.
 - treatmentValuePotential: commercial value band of that interest (LOW/MEDIUM/HIGH/PREMIUM). Business prioritisation only; NEVER estimate an exact price.
 - painNeedLevel: strength of the stated need. HIGH = severe pain, broken tooth, swelling, cannot sleep, known required treatment. MEDIUM = discomfort, worsening symptoms, consultation requested. LOW = cosmetic research, general information, routine cleaning, future planning.
-- insuranceStatus: HAS_INSURANCE only when stated. NO_INSURANCE when explicitly stated. Never guess. Do NOT penalise a patient for having no insurance.
-- paymentReadiness: READY = explicitly ready to proceed or self-pay without issue. NEEDS_OPTIONS = asks about financing, payment plans, or insurance acceptance. PRICE_SENSITIVE = asks about price before booking. UNKNOWN otherwise.
+- PATIENT-REPORTED ANSWERS: the enquiry may include two explicit structured answers taken from the public form — "Patient-reported insurance" (YES | NO | UNKNOWN) and "Payment preference" (INSURANCE | SELF_PAY | FINANCING | UNKNOWN). These are patient-provided and never verified. Treat an explicit answer as STRONGER evidence than free-text inference, but never contradict a genuine conflict elsewhere in the enquiry.
+- insuranceStatus (your interpretation): if patient-reported insurance is YES, answer HAS_INSURANCE; if NO, answer NO_INSURANCE. Otherwise infer from the enquiry, and use UNKNOWN when there is no signal. Never guess. Do NOT penalise a patient for having no insurance, and never claim coverage was verified.
+- paymentPreference (patient-reported, input only): INSURANCE = the patient expects insurance to be part of payment; SELF_PAY = the patient explicitly expects to pay themselves; FINANCING = the patient may need a payment plan; UNKNOWN = no assumption. Do not treat this as a verified financial status.
+- paymentReadiness (your interpretation, separate from paymentPreference): READY = explicitly ready to proceed or self-pay without issue. NEEDS_OPTIONS = asks about financing, payment plans, or insurance acceptance; a SELF_PAY preference supports READY, while FINANCING or INSURANCE support NEEDS_OPTIONS. PRICE_SENSITIVE = asks about price before booking. UNKNOWN otherwise. Never classify a lead as low quality merely for lacking insurance or requesting financing.
 - followUpPriority and recommendedFollowUpMinutes: how fast staff should follow up. Suggested timing: emergency 5-15 minutes; high intent 15-60 minutes; warm same business day (240-480); low intent 1-2 business days (1440-2880).
 
 SCORING GUIDE (1-100) — combine ALL signals; never classify from one field alone:
@@ -85,6 +97,11 @@ export function buildLeadUserPrompt(lead: LeadPromptInput): string {
     `Requested service: ${serviceInterestLabel(lead.serviceInterest)}`,
     `Preferred contact method: ${lead.preferredContactMethod}`,
     `Visitor's stated urgency: ${lead.submittedUrgency}`,
+    "",
+    "Patient-reported answers from the public form (unverified, patient-provided):",
+    `- Dental insurance: ${lead.patientInsuranceStatus ?? "UNKNOWN"}`,
+    `- Intended payment method: ${lead.paymentPreference ?? "UNKNOWN"}`,
+    "Treat these explicit answers as stronger evidence than free-text inference, but never claim insurance eligibility, benefits, coverage, deductibles or authorisation were verified.",
     "",
     "Visitor message:",
     '"""',

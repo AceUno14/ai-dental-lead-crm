@@ -18,6 +18,8 @@ export type AnalysisLeadInput = Pick<
   | "preferredContactMethod"
   | "submittedUrgency"
   | "message"
+  | "patientInsuranceStatus"
+  | "paymentPreference"
 >;
 
 /**
@@ -47,6 +49,10 @@ export async function runLeadAnalysis(
       preferredContactMethod: lead.preferredContactMethod,
       submittedUrgency: lead.submittedUrgency,
       message: lead.message,
+      // The patient's own explicit answers are passed through so the AI uses
+      // them instead of having to infer from free text.
+      patientInsuranceStatus: lead.patientInsuranceStatus,
+      paymentPreference: lead.paymentPreference,
     });
 
     await prisma.$transaction(async (tx) => {

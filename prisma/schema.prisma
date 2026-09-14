@@ -100,6 +100,25 @@ enum PaymentReadiness {
   UNKNOWN
 }
 
+// Patient-reported answers from the public enquiry form. These are the
+// patient's own words, NOT a verified insurance or benefits check, and they are
+// deliberately separate from the AI-derived InsuranceStatus.
+enum PatientInsuranceStatus {
+  YES
+  NO
+  UNKNOWN
+}
+
+// How the patient expects to pay for treatment (patient-reported). This is a
+// different concept from PaymentReadiness, which is the AI's interpretation of
+// how ready the lead appears to move forward financially.
+enum PaymentPreference {
+  INSURANCE
+  SELF_PAY
+  FINANCING
+  UNKNOWN
+}
+
 // How quickly the clinic should follow up. Operational routing, not medicine.
 enum FollowUpPriority {
   IMMEDIATE
@@ -252,19 +271,23 @@ model Membership {
 }
 
 model Lead {
-  id                     String        @id @default(cuid())
+  id                     String                 @id @default(cuid())
   clinicId               String
   name                   String
   email                  String
   phone                  String
   serviceInterest        String
-  preferredContactMethod ContactMethod @default(EMAIL)
-  submittedUrgency       LeadUrgency   @default(UNKNOWN)
+  preferredContactMethod ContactMethod          @default(EMAIL)
+  submittedUrgency       LeadUrgency            @default(UNKNOWN)
   message                String
-  consent                Boolean       @default(false)
-  status                 LeadStatus    @default(NEW)
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
+  consent                Boolean                @default(false)
+  // Optional patient-reported answers. UNKNOWN is the safe default so existing
+  // production leads stay valid without a backfill.
+  patientInsuranceStatus PatientInsuranceStatus @default(UNKNOWN)
+  paymentPreference      PaymentPreference      @default(UNKNOWN)
+  status                 LeadStatus             @default(NEW)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   clinic     Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
   analysis   LeadAnalysis?

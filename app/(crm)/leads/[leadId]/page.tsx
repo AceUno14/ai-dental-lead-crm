@@ -11,7 +11,11 @@ import { NoteForm } from "@/components/leads/note-form";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { requireClinicContext } from "@/lib/auth/clinic";
 import { getClinicLeadDetail } from "@/lib/services/leads";
-import { serviceInterestLabel } from "@/lib/validation/lead";
+import {
+  patientInsuranceLabel,
+  paymentPreferenceLabel,
+  serviceInterestLabel,
+} from "@/lib/validation/lead";
 
 export const metadata: Metadata = {
   title: "Lead detail",
@@ -75,7 +79,10 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ lea
           </Card>
 
           <Card>
-            <CardHeader title="Original enquiry" />
+            <CardHeader
+              title="Original enquiry"
+              description="What the patient submitted. Insurance and payment answers are patient-reported, not verified."
+            />
             <CardBody className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <DetailRow label="Email" value={lead.email} />
@@ -85,6 +92,26 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ lea
                   value={lead.preferredContactMethod.toLowerCase()}
                 />
                 <DetailRow label="Stated urgency" value={lead.submittedUrgency.replace(/_/g, " ")} />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Patient input (unverified)
+                </p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <DetailRow
+                    label="Patient-reported insurance"
+                    value={patientInsuranceLabel(lead.patientInsuranceStatus)}
+                  />
+                  <DetailRow
+                    label="Payment preference"
+                    value={paymentPreferenceLabel(lead.paymentPreference)}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Patient-reported answers only — no eligibility, benefits or coverage has been
+                  verified.
+                </p>
               </div>
 
               <div>

@@ -1036,6 +1036,56 @@ No patient reply is ever sent automatically; the draft reply remains review-only
 
 ---
 
+# D-047 — Patient-Reported Insurance and Payment Preference (Public Form)
+
+Status: ACCEPTED (Session 14)
+
+Live production testing showed the AI could only infer insurance/payment readiness from free text
+("I have insurance and can provide the details when contacted"), which is unreliable. The public
+enquiry form therefore asks two OPTIONAL, structured questions:
+
+- "Do you have dental insurance?" → `Lead.patientInsuranceStatus`
+  (`PatientInsuranceStatus`: YES | NO | UNKNOWN)
+- "How are you planning to pay?" → `Lead.paymentPreference`
+  (`PaymentPreference`: INSURANCE | SELF_PAY | FINANCING | UNKNOWN)
+
+Both columns live on `Lead`, not `LeadAnalysis`, because they are submitted by the patient rather
+than derived by the AI. Both are `NOT NULL DEFAULT 'UNKNOWN'`, so existing production leads stay
+valid with no backfill and the migration is purely additive.
+
+Why new enums instead of reusing existing ones:
+
+- `PatientInsuranceStatus` (YES/NO) is deliberately NOT the AI's `InsuranceStatus`
+  (HAS_INSURANCE/NO_INSURANCE). One records what the patient said, the other what the AI concludes;
+  collapsing them would make the UI unable to show the two side by side and would make it easy to
+  present an unverified patient answer as an AI interpretation (or vice versa).
+- `PaymentPreference` (how the patient expects to pay) is deliberately separate from
+  `PaymentReadiness` (how ready the lead appears to move forward financially). These are different
+  concepts and MUST NOT be conflated.
+
+Patient-reported ≠ verified. `patientInsuranceStatus = YES` is never eligibility, benefits,
+procedure-coverage, deductible or authorisation verification. The prompt forbids claiming any of
+those, and the CRM labels the values "Patient input (unverified)".
+
+Validation: `lib/validation/lead.ts` accepts only the supported enum values; an omitted, empty or
+null answer becomes `UNKNOWN` server-side, so older form clients and integrations stay compatible.
+Raw browser values are never trusted.
+
+AI integration: the explicit answers are added to `LeadPromptInput` and rendered by
+`buildLeadUserPrompt` as "Patient-reported answers from the public form (unverified)". The live
+prompt instructs the model to treat them as STRONGER evidence than free-text inference — YES →
+`insuranceStatus = HAS_INSURANCE`, NO → `NO_INSURANCE`, SELF_PAY → `paymentReadiness = READY`,
+FINANCING/INSURANCE → `NEEDS_OPTIONS` — while still mapping FINANCING to `NEEDS_OPTIONS` rather than
+to a penalty. Mock mode (`lib/ai/mock.ts`) applies the identical precedence so both modes agree.
+
+Scoring: no weight changed (D-044 still holds). The explicit answers reach scoring only through
+`insuranceStatus`/`paymentReadiness`, so urgency (25) plus appointment intent (20) remain the
+dominant signals. Insurance is never required for a HOT lead (an uninsured, urgently self-paying
+lead scores 81/HOT), and a patient requesting financing can never be pushed from HOT to COLD by
+their payment preference alone.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

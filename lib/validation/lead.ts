@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { ContactMethod, LeadUrgency } from "@/lib/generated/prisma/enums";
+import {
+  ContactMethod,
+  LeadUrgency,
+  PatientInsuranceStatus,
+  PaymentPreference,
+} from "@/lib/generated/prisma/enums";
 
 /**
  * Public dental lead form options.
@@ -38,6 +43,28 @@ export const CONTACT_METHOD_OPTIONS = [
   { value: ContactMethod.TEXT, label: "Text message" },
 ] as const;
 
+/**
+ * Optional patient-reported insurance question. "Not sure" and an omitted
+ * answer both persist as UNKNOWN, because this is patient-reported information
+ * only — it is never a verified benefits check.
+ */
+export const PATIENT_INSURANCE_OPTIONS = [
+  { value: PatientInsuranceStatus.YES, label: "Yes" },
+  { value: PatientInsuranceStatus.NO, label: "No" },
+  { value: PatientInsuranceStatus.UNKNOWN, label: "Not sure" },
+] as const;
+
+/**
+ * Optional patient-reported payment preference. This is a different concept
+ * from the AI's paymentReadiness and is stored separately.
+ */
+export const PAYMENT_PREFERENCE_OPTIONS = [
+  { value: PaymentPreference.INSURANCE, label: "Insurance" },
+  { value: PaymentPreference.SELF_PAY, label: "Self-pay" },
+  { value: PaymentPreference.FINANCING, label: "Financing / payment plan" },
+  { value: PaymentPreference.UNKNOWN, label: "Not sure" },
+] as const;
+
 const PHONE_PATTERN = /^[0-9+()\-.\s]{7,25}$/;
 
 export const publicLeadSchema = z.object({
@@ -72,6 +99,46 @@ export const publicLeadSchema = z.object({
     .trim()
     .min(10, "Please tell us a little more (at least 10 characters).")
     .max(1500, "Message must be 1500 characters or fewer."),
+  // Optional patient-reported answers. Only the supported enum values are
+  // accepted; an omitted, empty or null answer safely becomes UNKNOWN, so older
+  // form clients and existing integrations stay compatible.
+  patientInsuranceStatus: z
+    .union(
+      [
+        z.enum([
+          PatientInsuranceStatus.YES,
+          PatientInsuranceStatus.NO,
+          PatientInsuranceStatus.UNKNOWN,
+        ]),
+        z.literal(""),
+      ],
+      { message: "Please choose one of the insurance options." },
+    )
+    .nullish()
+    .transform((value) =>
+      value === undefined || value === null || value === ""
+        ? PatientInsuranceStatus.UNKNOWN
+        : value,
+    ),
+  paymentPreference: z
+    .union(
+      [
+        z.enum([
+          PaymentPreference.INSURANCE,
+          PaymentPreference.SELF_PAY,
+          PaymentPreference.FINANCING,
+          PaymentPreference.UNKNOWN,
+        ]),
+        z.literal(""),
+      ],
+      { message: "Please choose one of the payment options." },
+    )
+    .nullish()
+    .transform((value) =>
+      value === undefined || value === null || value === ""
+        ? PaymentPreference.UNKNOWN
+        : value,
+    ),
   consent: z.literal(true, {
     message: "Please agree to be contacted about your enquiry.",
   }),
@@ -88,4 +155,16 @@ export const clinicSlugSchema = z
 
 export function serviceInterestLabel(value: string): string {
   return SERVICE_INTERESTS.find((option) => option.value === value)?.label ?? value;
+}
+
+/**
+ * Display label for a patient-reported insurance answer. UNKNOWN renders as
+ * "Not sure" because it covers both "Not sure" and an unanswered question.
+ */
+export function patientInsuranceLabel(value: string): string {
+  return PATIENT_INSURANCE_OPTIONS.find((option) => option.value === value)?.label ?? "Not sure";
+}
+
+export function paymentPreferenceLabel(value: string): string {
+  return PAYMENT_PREFERENCE_OPTIONS.find((option) => option.value === value)?.label ?? "Not sure";
 }

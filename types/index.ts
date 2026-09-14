@@ -11,6 +11,8 @@ export {
   LeadUrgency,
   MembershipRole,
   PainNeedLevel,
+  PatientInsuranceStatus,
+  PaymentPreference,
   PaymentReadiness,
   ServiceCategory,
   TreatmentValuePotential,

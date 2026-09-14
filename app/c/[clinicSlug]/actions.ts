@@ -17,7 +17,17 @@ const SAFE_ERROR =
  * enquiry text. Only the public form fields are echoed back.
  */
 function submittedValues(formData: FormData): Record<string, string> {
-  const fields = ["name", "email", "phone", "serviceInterest", "preferredContactMethod", "urgency", "message"];
+  const fields = [
+    "name",
+    "email",
+    "phone",
+    "serviceInterest",
+    "preferredContactMethod",
+    "urgency",
+    "patientInsuranceStatus",
+    "paymentPreference",
+    "message",
+  ];
   const values: Record<string, string> = {};
 
   for (const field of fields) {
@@ -51,6 +61,10 @@ export async function submitLeadAction(
     serviceInterest: formData.get("serviceInterest"),
     preferredContactMethod: formData.get("preferredContactMethod"),
     urgency: formData.get("urgency"),
+    // Optional patient-reported answers: an empty selection is normalised to
+    // UNKNOWN by the schema, never rejected.
+    patientInsuranceStatus: formData.get("patientInsuranceStatus"),
+    paymentPreference: formData.get("paymentPreference"),
     message: formData.get("message"),
     consent: formData.get("consent") === "on" || formData.get("consent") === "true",
   });

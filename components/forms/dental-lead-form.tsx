@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import {
   CONTACT_METHOD_OPTIONS,
+  PATIENT_INSURANCE_OPTIONS,
+  PAYMENT_PREFERENCE_OPTIONS,
   SERVICE_INTERESTS,
   URGENCY_OPTIONS,
 } from "@/lib/validation/lead";
@@ -126,6 +128,50 @@ export function DentalLeadForm({ clinicSlug }: { clinicSlug: string }) {
               Choose a timeframe
             </option>
             {URGENCY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label="Do you have dental insurance?"
+          htmlFor="patientInsuranceStatus"
+          hint="Optional. Your own answer — the clinic will confirm any cover with you."
+          error={state.fieldErrors?.patientInsuranceStatus?.[0]}
+        >
+          <Select
+            id="patientInsuranceStatus"
+            name="patientInsuranceStatus"
+            defaultValue={fallback.patientInsuranceStatus ?? ""}
+            aria-invalid={Boolean(state.fieldErrors?.patientInsuranceStatus)}
+          >
+            <option value="">Prefer not to say</option>
+            {PATIENT_INSURANCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+
+      <div className="grid gap-5 sm:grid-cols-2">
+        <Field
+          label="How are you planning to pay?"
+          htmlFor="paymentPreference"
+          hint="Optional. This helps the clinic prepare the right payment options."
+          error={state.fieldErrors?.paymentPreference?.[0]}
+        >
+          <Select
+            id="paymentPreference"
+            name="paymentPreference"
+            defaultValue={fallback.paymentPreference ?? ""}
+            aria-invalid={Boolean(state.fieldErrors?.paymentPreference)}
+          >
+            <option value="">Prefer not to say</option>
+            {PAYMENT_PREFERENCE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>

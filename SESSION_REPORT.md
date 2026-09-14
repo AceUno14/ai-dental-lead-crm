@@ -4,6 +4,279 @@ Most recent session first.
 
 ---
 
+# SESSION 16 — AUTHORIZED PRODUCTION ROLLOUT: PATIENT INSURANCE/PAYMENT MIGRATION APPLIED
+
+Date: 2026-09-14 · Scope: apply the single verified pending migration
+(`20260914000000_patient_insurance_payment_preference`) to PRODUCTION after re-verifying identity and
+pre-flight facts, then verify read-only · STATUS: **PASS. Production schema is up to date. No data
+lost, no row counts changed. Nothing committed, pushed or deployed.**
+
+## Pre-flight (all read-only, all matched exactly)
+
+```
+inherited DATABASE_URL fingerprint: 46bfa2c59fb1   (production)
+.env.local fingerprint:             24ea81a95814   (development)
+DB FINGERPRINT:                     46bfa2c59fb1
+host: ep-mute-scene-b34nnrn8-pooler.c-4.ap-southeast-1.aws.neon.tech
+```
+
+`npx prisma migrate status` reported 4 migrations found with exactly one pending:
+`20260914000000_patient_insurance_payment_preference`.
+
+`migration.sql` was re-read and re-scanned: exactly 2 `CREATE TYPE` statements
+(`PatientInsuranceStatus`, `PaymentPreference`) and 1 `ALTER TABLE "lead" ADD COLUMN` (both columns
+`NOT NULL DEFAULT 'UNKNOWN'`). A keyword scan for `DROP TABLE`, `DROP COLUMN`, `DELETE`, `TRUNCATE`,
+`RESET`, `UPDATE` and `INSERT` returned no matches.
+
+Row counts before (read-only): lead 13, lead_analysis 12, follow_up_task 6, lead_note 4,
+lead_activity 60, clinic 2, user 2.
+
+## The write
+
+```
+npx prisma migrate deploy
+  -> Applying migration `20260914000000_patient_insurance_payment_preference`
+  -> All migrations have been successfully applied.
+```
+
+Executed once, against the identity-verified production database. `prisma migrate dev`, `db:seed`,
+`migrate resolve`, manual SQL, Vercel changes, git push and any deployment were NOT run.
+
+## Post-migration verification (read-only)
+
+```
+npx prisma migrate status  ->  4 migrations found
+                              Database schema is up to date!
+```
+
+| Column | Type | Nullable | Default |
+| --- | --- | --- | --- |
+| `patientInsuranceStatus` | `PatientInsuranceStatus` | NO | `'UNKNOWN'::"PatientInsuranceStatus"` |
+| `paymentPreference` | `PaymentPreference` | NO | `'UNKNOWN'::"PaymentPreference"` |
+
+Enums: `PatientInsuranceStatus` = YES, NO, UNKNOWN · `PaymentPreference` = INSURANCE, SELF_PAY,
+FINANCING, UNKNOWN.
+
+Existing data: all 13 pre-existing leads read `UNKNOWN` / `UNKNOWN`; 0 rows have NULL answers (the
+`NOT NULL DEFAULT` applied to existing rows automatically — no backfill, no data change).
+
+Row counts after: lead 13, lead_analysis 12, follow_up_task 6, lead_note 4, lead_activity 60,
+clinic 2, user 2 — identical to the pre-flight counts, so no application rows were unexpectedly
+changed. No test lead was created or deleted.
+
+Migration history: `20260914000000_patient_insurance_payment_preference` recorded with
+finished_at 2026-09-14T10:28:22.050Z, applied_steps=1, not rolled back. The three earlier
+migrations are unchanged.
+
+Note: one read-only verification query initially failed with `column "patientinsurancestatus" does
+not exist` because Postgres folds unquoted identifiers to lowercase; re-running it with quoted
+identifiers succeeded. That was a query-authoring mistake in the check, not a schema problem.
+
+## Secrets
+
+No connection string, credential, token or password was printed — only SHA-256 fingerprint prefixes,
+a public hostname, column metadata and counts.
+
+---
+
+# SESSION 15 — PRODUCTION MIGRATION PRE-FLIGHT (READ-ONLY): ONLY THE SESSION 14 MIGRATION PENDING
+
+Date: 2026-09-14 · Scope: independently verify the CURRENT production migration state before any
+production write · STATUS: **PRODUCTION IDENTITY VERIFIED. Only
+`20260914000000_patient_insurance_payment_preference` is pending. Production NOT modified. No
+`migrate deploy`, no `migrate dev`, no seed, no Vercel change, no push, no deploy.**
+
+Temporal note: this entry describes the state at the time of that pre-flight. The single pending
+migration was subsequently authorized and applied in session 16 — see the entry above for the
+current state (production fully up to date).
+
+## Why this session existed
+
+The previous documentation claimed three migrations were still pending in production. That was
+stale: production had already had `20260911000000_init`,
+`20260913000000_dental_conversion_workflow` and `20260913120000_fix_followup_analysis_fk`
+applied/reconciled. This session re-checked production directly instead of trusting the docs.
+
+## Identity — verified without printing any credential
+
+The production endpoint is the value inherited in the shell environment
+(`DATABASE_URL inherited: SET`); only a SHA-256 prefix was printed:
+
+```
+inherited fingerprint:  46bfa2c59fb1   (production)
+.env.local fingerprint: 24ea81a95814   (development)
+DB FINGERPRINT:         46bfa2c59fb1   (value actually used)
+database: neondb   schema: public   current_user: neondb_owner
+production host: ep-mute-scene-b34nnrn8-pooler.c-4.ap-southeast-1.aws.neon.tech
+```
+
+The fingerprint used matches the inherited production value and differs from `.env.local`
+(development), and the host differs from the development host
+(`ep-solitary-morning-b3obyimv-pooler…`). Note that a plain `npx prisma migrate` invocation targets
+production, because dotenv does not override an already-set variable — the development checks in
+session 14 therefore unset it explicitly.
+
+## Applied migrations on production (read-only query on `_prisma_migrations`)
+
+| Migration | Recorded |
+| --- | --- |
+| `20260911000000_init` | finished 2026-09-10T21:34:53.975Z, applied_steps=1 |
+| `20260913000000_dental_conversion_workflow` | finished 2026-09-12T17:51:59.190Z, applied_steps=1 |
+| `20260913120000_fix_followup_analysis_fk` | recorded 2026-09-12T22:11:01.578Z, applied_steps=0 (reconciled, not executed) |
+
+No migration is rolled back (`rolled_back_at` NULL for all three).
+
+`applied_steps=0` on the corrective FK migration is the signature of `migrate resolve --applied`
+rather than an executed migration — which is correct here, because session 13 proved production's
+`follow_up_task_analysis_fkey` already referenced `lead_analysis("leadId")`, so the corrective
+migration had nothing to change on that database.
+
+## Pending migrations on production
+
+```
+Following migration have not yet been applied:
+20260914000000_patient_insurance_payment_preference
+```
+
+Exactly one migration is pending — the session 14 patient-reported insurance/payment migration.
+It is additive: two enum types plus one `ALTER TABLE "lead" ADD COLUMN` with a default, so it
+requires no backfill and cannot orphan existing rows.
+
+## Commands run (all read-only)
+
+- `npx tsx scripts/db-identity.mts cli` — identity + fingerprints + FK definitions.
+- `npx prisma migrate status` — pending/applied summary and the target host.
+- one inline `SELECT migration_name, finished_at, rolled_back_at, applied_steps_count FROM
+  "_prisma_migrations" ORDER BY started_at` via `pg` — the applied list above.
+
+Explicitly NOT run: `prisma migrate deploy`, `prisma migrate dev`, `prisma migrate resolve`,
+`db:seed`, any DDL/DML, and any Vercel or git write.
+
+## Documentation corrected
+
+- `TASKS.md` — CURRENT EXECUTION now records the verified production state (three applied, one
+  pending); the Blocked Tasks line no longer says three; PHASE 11's DC-014 note keeps its historical
+  wording but is annotated with the verified correction. Older session entries are preserved.
+- `SESSION_REPORT.md` — this entry, plus the stale "three unapplied migrations" sentence in the
+  session 14 entry is annotated as corrected. No historical entry was rewritten or deleted.
+
+## Secrets
+
+No connection string, host credential, token or password was printed — only SHA-256 fingerprint
+prefixes and a public hostname. `.env.local` was not modified.
+
+---
+
+# SESSION 14 — PATIENT-REPORTED INSURANCE + PAYMENT PREFERENCE (DEVELOPMENT ONLY)
+
+Date: 2026-09-14 · Scope: close the production-testing product gap where the AI had to infer
+insurance/payment readiness from free text, by adding two OPTIONAL structured questions to the
+public enquiry form and carrying them through Lead → AI → scoring → follow-up → CRM · STATUS:
+**PASS. All verification green. Development migration applied. Production untouched. Nothing
+committed, pushed or deployed.**
+
+## The gap
+
+In live production testing a lead was classified `insurance: has insurance` / `payment readiness:
+ready` only because the free-text message happened to say "I have insurance and can provide the
+details when contacted." That inference is unreliable. The form now asks directly, and the answers
+are stored as explicit, patient-reported data.
+
+## What changed
+
+| File | Change |
+| --- | --- |
+| `prisma/schema.prisma` | New enums `PatientInsuranceStatus` (YES/NO/UNKNOWN) and `PaymentPreference` (INSURANCE/SELF_PAY/FINANCING/UNKNOWN); `Lead.patientInsuranceStatus` and `Lead.paymentPreference`, both `NOT NULL DEFAULT 'UNKNOWN'`. |
+| `prisma/migrations/20260914000000_patient_insurance_payment_preference/migration.sql` | NEW additive forward migration: two `CREATE TYPE` + one `ALTER TABLE "lead" ADD COLUMN`. No existing migration edited, no data change. |
+| `lib/validation/lead.ts` | Two new optional fields (only supported enum values accepted; omitted/empty/null → UNKNOWN), option lists, and label helpers. |
+| `lib/services/leads.ts` | `createPublicLead` persists both fields. |
+| `app/c/[clinicSlug]/actions.ts` | Parses both fields and echoes them back on a failed submission. |
+| `components/forms/dental-lead-form.tsx` | Two optional selects placed between urgency and preferred contact method, with "Prefer not to say" defaults and optional hints. |
+| `lib/ai/prompt.ts` | `LeadPromptInput` gains both answers; the user prompt adds a labelled "Patient-reported answers from the public form (unverified)" block; the system prompt defines the precedence rule and the no-verification boundary. |
+| `lib/ai/mock.ts` | Explicit answers override free-text inference (YES → HAS_INSURANCE, NO → NO_INSURANCE, SELF_PAY → READY, FINANCING/INSURANCE → NEEDS_OPTIONS) and appear in the summary/action copy. |
+| `lib/services/lead-analysis.ts` | Passes both stored answers to the analyzer. |
+| `lib/ai/scoring.ts` | Documentation only — no weight changed (D-044 preserved). |
+| `app/(crm)/leads/[leadId]/page.tsx` | New "Patient input (unverified)" block with "Patient-reported insurance" and "Payment preference". |
+| `components/leads/ai-analysis-panel.tsx` | Rows relabelled "Insurance interpretation" / "Payment readiness (AI)", plus a note that patient answers are shown separately and unverified. |
+| `types/index.ts` | Exports the two new enums. |
+| `scripts/verify-e2e.mts` | New section 2c: the insurance/payment answer matrix against the real database. |
+| `scripts/verify-ai-provider.mts` | New offline section 2b: mock precedence, prompt payload, scoring and enum-validation checks. |
+
+## Two concepts kept separate (deliberate)
+
+- `PatientInsuranceStatus` (patient says YES/NO) is NOT the AI's `InsuranceStatus`
+  (HAS_INSURANCE/NO_INSURANCE). New enum rather than reuse, so the CRM can show both side by side
+  without presenting an unverified patient answer as AI output (or vice versa).
+- `PaymentPreference` (how the patient expects to pay) is NOT `PaymentReadiness` (how ready the lead
+  looks financially). The two are stored in different tables and rendered in different cards.
+
+Patient-reported ≠ verified: no eligibility, benefits, procedure coverage, deductible or
+authorisation claim is made anywhere, and the prompt forbids all of them.
+
+## Migration and database identity
+
+`DATABASE_URL` was unset for every database command, so `.env.local` is authoritative.
+
+```
+DATABASE_URL inherited before loading: NO
+.env.local fingerprint: 24ea81a95814   (development)
+DB FINGERPRINT:        24ea81a95814
+```
+
+The inherited production endpoint recorded in sessions 11-13 (`46bfa2c59fb1`) was not present in this
+shell. Migration state before applying: 4 migrations found, only
+`20260914000000_patient_insurance_payment_preference` unapplied. Applied with `npx prisma migrate
+deploy` (forward-only; no reset, no re-baseline). Result: "All migrations have been successfully
+applied." Development had 0 tasks/leads created by hand; the e2e suite cleaned up after itself.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `npx prisma format` | **PASS** |
+| `npx prisma validate` | **PASS** |
+| `npx prisma generate` | **PASS** (client 7.10.0) |
+| `npx tsc --noEmit` | **PASS** (exit 0) |
+| `npm run lint` | **PASS** (exit 0, 0 problems) |
+| `npm run build` | **PASS** (compiled, TypeScript finished, 8/8 static pages, 9 routes) |
+| `npm run verify:email` | **PASS** (all 6 sections) |
+| `npm run verify:ai` | **PASS** (offline incl. the new patient-answer section; live checks SKIP under `AI_MODE=mock`) |
+| `npm run verify:ai -- --self-test` | **PASS** (15/15 loopback stub) |
+| `npm run verify:e2e` | **PASS — 73 checks, 0 failures** (59 before; 14 new) |
+
+New e2e assertions (section 2c): insurance YES persists; payment SELF_PAY persists; explicit YES
+reaches the AI as HAS_INSURANCE; SELF_PAY reaches the AI as READY; insurance NO persists; explicit
+NO reaches the AI as NO_INSURANCE; omitted insurance → UNKNOWN; omitted payment → UNKNOWN; a
+submission without the new fields stays valid; FINANCING persists; FINANCING → NEEDS_OPTIONS;
+FINANCING never forces an urgent high-intent lead to COLD; the urgent financing lead keeps an
+immediate/high follow-up. Existing flow, tenant isolation, retry idempotency and task
+completion/no-resurrect all still pass unchanged.
+
+New offline assertions (section 2b of `verify:ai`): mock precedence for YES/NO/SELF_PAY/FINANCING;
+explicit answer outranks conflicting free text; the answers are present in the built user prompt;
+insurance is not required for HOT (uninsured emergency scores 81/HOT); financing keeps an urgent
+high-intent lead at WARM or better (76); omitted and empty values become UNKNOWN; unsupported values
+are rejected.
+
+## Not done (deliberately)
+
+- No production write: the new migration is NOT applied to production, and no Vercel variable was
+  read or changed. Production rollout of `20260914000000_patient_insurance_payment_preference`
+  remains the user's action. (Corrected in session 15: the earlier note here claimed three
+  migrations were pending in production. A read-only check proved that the two older migrations are
+  already applied/reconciled there, so only the session 14 migration is pending. See the SESSION 15
+  entry above.)
+- `npm run db:seed` was not run — it replaces the demo clinic and would delete existing development
+  data; the e2e suite creates and cleans up its own records. Seed leads pick up the new columns via
+  their `UNKNOWN` defaults, so nothing needed changing there.
+- Nothing was committed, pushed or deployed.
+
+## Secrets
+
+No secret value was printed — only SHA-256 fingerprint prefixes. `.env.local` was not modified.
+
+---
+
 # SESSION 13 — DEBUG LOOP ON DEVELOPMENT: ALL GREEN, NO FAILURES TO FIX
 
 Date: 2026-09-13 · Scope: run the prescribed debug loop (`tsc --noEmit`, `lint`, `build`,
