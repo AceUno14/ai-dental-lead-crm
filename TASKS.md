@@ -2,18 +2,28 @@
 
 ## CURRENT EXECUTION
 
-Current Phase: PHASE 13 — PUBLIC SUBMISSION RELIABILITY (session 17), which followed PHASE 12 —
-PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE (session 14) and PHASE 11 — DENTAL CONVERSION
-WORKFLOW (session 7). All are verified on the DEVELOPMENT database, and all migrations are applied to
-PRODUCTION as well (session 16).
+PRODUCTION MVP: **COMPLETE / VERIFIED** (final closeout, session 18, 2026-09-14).
 
-Current Task: NONE. The session 17 first-submission defect is fixed and verified against the
-development database, but the fix is NOT deployed — production still runs the previous revision and
-needs a redeploy before the visitor-visible behaviour changes. The production database was neither
-read nor written in session 17, and nothing is committed, pushed or deployed beyond what is recorded
-here.
+Latest production deployment: commit `8bd9b96` — "Fix first submission reliability". The production
+first-submission bug is VERIFIED FIXED: the user manually verified on the live SmileWorks Dental
+production form that the FIRST submission succeeds immediately (no retry), the lead appears in the
+CRM, live OpenRouter AI qualification completes, the AI follow-up task is created, and the timeline
+records Lead created → AI analysis started → Follow-up task created → AI analysis completed. The
+patient insurance and payment preference questions work and their answers reach AI qualification
+(test lead: score 95/100, priority HOT, follow-up IMMEDIATE — respond within 10 minutes, treatment
+interest EMERGENCY, pain/need HIGH, appointment intent HIGH, patient-reported insurance Yes,
+payment preference Insurance). Human review of AI output remains required, no automatic patient
+reply is sent, and patient-reported insurance/payment answers remain explicitly unverified.
+Production schema is fully migrated (`npx prisma migrate status`: "Database schema is up to date!",
+session 16).
 
-PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED (session 16, authorized rollout):
+Current Task: NONE. Blocked Tasks: NONE.
+
+Next Eligible Task: portfolio/demo polish or a future feature phase only — do not open new scope
+without an explicit user request.
+
+PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED AND UP TO DATE (session 16, authorized rollout;
+re-confirmed by the session 18 production verification):
 
 - Identity verified before the write: host `ep-mute-scene-b34nnrn8-pooler…` (production); DB
   fingerprint `46bfa2c59fb1` — the inherited production value, distinct from `.env.local` =
@@ -33,8 +43,14 @@ PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED (session 16, authorized r
 - `prisma migrate dev`, `db:seed`, `migrate resolve` and manual SQL were NOT run, and no Vercel
   variable was read or changed.
 
+Last Completed Task (session 18): documentation closeout only — TASKS.md and SESSION_REPORT.md
+updated to record that commit `8bd9b96` is deployed to production and the first-submission fix,
+the insurance/payment workflow, live AI qualification and follow-up task creation are verified live.
+No code, schema, migration, production database, Vercel, push or deploy action was taken.
+
 Last Completed Task (session 17): T-045 — public enquiry first-submission failure: root cause found,
-smallest fix applied, regression-tested. ALL CHECKS GREEN.
+smallest fix applied, regression-tested. ALL CHECKS GREEN. (Now deployed: commit `8bd9b96` verified
+live in production, session 18.)
 
 - Reported: the FIRST submission of a valid enquiry shows the generic failure message, an immediate
   retry works, and after the failure the selects reset while the text fields keep their values.
@@ -89,11 +105,13 @@ CHECKS PASS; one real defect found and fixed.
 Blocked Tasks:
 
 - NONE. The production rollout of `20260914000000_patient_insurance_payment_preference` was
-  authorized and applied in session 16; production is now fully migrated and up to date.
-  Any further production write still requires explicit user authorization.
+  authorized and applied in session 16; production is fully migrated and up to date. Any further
+  production write still requires explicit user authorization.
 
-Next Eligible Task: none on development. Optional follow-ups: the production `migrate deploy`, and
-the runtime cross-clinic check for the follow-up-task path noted under DC-013.
+Next Eligible Task: portfolio/demo polish or a future feature phase only. No MVP task remains:
+the last open item — deploying the session 17 fix — was closed by commit `8bd9b96`, now verified
+live in production (session 18). Optional, only on explicit request: the runtime cross-clinic
+check for the follow-up-task path noted under DC-013.
 
 Last Verification (session 5 — production deployment and live AI, PASS):
 
@@ -2261,41 +2279,52 @@ Verification:
 identity-verified development branch (fingerprint 24ea81a95814). See DECISIONS.md D-048 and the
 session 17 SESSION_REPORT entry.
 
-Not done in this session (requires explicit authorization): deploying the fix to production.
+Deployed afterwards: commit `8bd9b96` is live in production, and the first-submission fix was
+verified there manually — the FIRST submission now succeeds immediately (session 18 closeout).
 
 ---
 
 # WHEN MVP IS COMPLETE
 
-Current Phase: MVP COMPLETE — deployed and verified in production
+Current Phase: PRODUCTION MVP COMPLETE / VERIFIED — deployed and verified live (session 18 closeout,
+2026-09-14)
 
-Current Task: None
+Current Task: NONE
 
-Last Completed Task: T-039 (Deploy to Vercel)
+Last Completed Task: SESSION 18 documentation closeout — commit `8bd9b96` ("Fix first submission
+reliability") recorded as deployed to production and manually verified live: FIRST submission
+succeeds immediately, the patient insurance/payment workflow works end to end, live OpenRouter AI
+qualification completes (test lead 95/100, HOT, IMMEDIATE), the AI follow-up task is created, and
+the timeline records Lead created → AI analysis started → Follow-up task created → AI analysis
+completed. Human review of AI output remains required; no automatic patient reply is sent;
+patient-reported insurance/payment answers remain explicitly unverified. Production schema is fully
+migrated.
 
-Blocked Tasks: None
+Blocked Tasks: NONE
 
-Next Eligible Task: None. Do not open new scope until the user requests it.
+Next Eligible Task: portfolio/demo polish or a future feature phase only. Do not open new scope
+until the user requests it.
 
-Last Verification:
+Last Verification (manual, production — session 18):
 
-npm run lint — PASS
+Public SmileWorks Dental enquiry form — PASS
 
-npx tsc --noEmit — PASS
+Patient insurance and payment preference questions — PASS
 
-npm run build — PASS
+FIRST submission succeeds immediately, no retry — PASS (production first-submission bug FIXED)
 
-npm run db:migrate — PASS
+Lead appears in the CRM — PASS
 
-npm run db:seed — PASS
+Live OpenRouter AI qualification — PASS ("First Try Test Lead": 95/100, HOT, IMMEDIATE,
+respond within 10 minutes, EMERGENCY, urgency Emergency, pain/need HIGH, appointment intent HIGH,
+patient-reported insurance Yes, payment preference Insurance, AI interpretation "has insurance",
+payment readiness "needs options")
 
-npx tsx scripts/verify-e2e.mts — PASS (30/30)
+AI summary, recommended action and draft reply — PASS
 
-npm run verify:ai — PASS (offline URL checks + loopback self-test)
+AI follow-up task created — PASS
 
-next start route QA (anonymous + authenticated) — PASS
+Activity timeline (Lead created, AI analysis started, Follow-up task created, AI analysis
+completed) — PASS
 
-Production (Vercel, `AI_MODE=live`) — PASS (lead "Live AI Test 2" analysed: 90/100, HOT,
-IMMEDIATE, EMERGENCY, `AI_ANALYSIS_COMPLETED`, model `openrouter/free`)
-
-Do not automatically invent Phase 11.
+Do not automatically invent a new phase.

@@ -4,12 +4,73 @@ Most recent session first.
 
 ---
 
+# SESSION 18 — FINAL PRODUCTION CLOSEOUT: FIRST-SUBMISSION FIX VERIFIED LIVE, MVP COMPLETE
+
+Date: 2026-09-14 · Scope: documentation closeout only, after the user manually verified the production
+deployment end to end · STATUS: **PASS. The production MVP is COMPLETE / VERIFIED. Commit 8bd9b96
+("Fix first submission reliability") is deployed to production, and the first-submission reliability
+fix, the patient insurance/payment workflow, live AI qualification and AI follow-up task creation are
+all verified live. No code, schema, migration, production database, Vercel, push or deploy action was
+taken in this session. Nothing committed yet — this closeout is uncommitted working-tree
+documentation.**
+
+## Production verification (performed manually by the user, recorded here)
+
+Latest production deployment: commit `8bd9b96` — "Fix first submission reliability".
+
+Verified against the live SmileWorks Dental production form and CRM:
+
+1. The public `/c/smileworks-dental` enquiry form loads.
+2. The new patient insurance question works.
+3. The new payment preference question works.
+4. The FIRST submission succeeds immediately — no retry required.
+5. The lead appears in the CRM.
+6. Live OpenRouter AI qualification completes.
+7. The test lead "First Try Test Lead" qualified as: score 95/100, priority HOT, follow-up
+   IMMEDIATE (respond within 10 minutes), treatment interest EMERGENCY, urgency Emergency,
+   pain/need HIGH, appointment intent HIGH, patient-reported insurance Yes, payment preference
+   Insurance, AI insurance interpretation "has insurance", AI payment readiness "needs options".
+8. An AI-generated summary exists.
+9. A recommended action exists.
+10. A draft reply exists.
+11. The AI follow-up task was created.
+12. The activity timeline contains: Lead created, AI analysis started, Follow-up task created,
+    AI analysis completed.
+
+The production first-submission bug (session 17, T-045) is therefore VERIFIED FIXED in production.
+
+## Standing product boundaries (unchanged, still true in production)
+
+- Human review remains required: AI output (summary, recommended action, draft reply) is
+  review-only assistance for staff, never an automatic action.
+- No automatic patient reply is ever sent; the draft reply is text for staff to review and send.
+- Patient-reported insurance and payment answers remain explicitly UNVERIFIED self-reports; the CRM
+  labels them "Patient input (unverified)" and never presents them as verified coverage.
+
+## This session's changes
+
+Documentation only: this file (new entry, plus a temporal note on session 17) and TASKS.md
+(CURRENT EXECUTION, the stale Next Eligible Task line, the T-045 deployment note and the
+"WHEN MVP IS COMPLETE" block). README.md was reviewed and left unchanged: its MVP STATUS section
+defers live status to TASKS.md by design, and its production sections (deployment, AI
+configuration, migration requirement, alert/follow-up behaviour) already match production.
+
+## Production
+
+Not touched by this session: no application code change, no schema change, no migration, no
+production database read or write, no test lead created or deleted, no Vercel change, no push,
+no deploy.
+
+---
+
 # SESSION 17 — PUBLIC ENQUIRY FIRST-SUBMISSION FAILURE: ROOT CAUSE, FIX AND REGRESSION TEST
 
 Date: 2026-09-14 · Scope: investigate the reproducible production report that the FIRST submission of
 the public enquiry form shows the generic failure message while an immediate retry works, and the
 form-state loss that follows it · STATUS: **FIXED AND VERIFIED against the development database.
-Production NOT touched, nothing committed, pushed or deployed — the fix is not live in production.**
+Production NOT touched, nothing committed, pushed or deployed in this session. TEMPORAL NOTE: the
+fix was subsequently committed (8bd9b96), deployed and manually verified live in production — see
+SESSION 18 above; this entry is the historical record of the investigation and fix itself.**
 
 ## Reported behaviour
 
