@@ -160,6 +160,8 @@ enum ActivityType {
   FOLLOW_UP_COMPLETED
   EMAIL_ALERT_SENT
   EMAIL_ALERT_FAILED
+  LEAD_ARCHIVED
+  LEAD_RESTORED
 }
 
 // --------------------------------------------
@@ -286,6 +288,12 @@ model Lead {
   patientInsuranceStatus PatientInsuranceStatus @default(UNKNOWN)
   paymentPreference      PaymentPreference      @default(UNKNOWN)
   status                 LeadStatus             @default(NEW)
+  // CRM cleanup, deliberately orthogonal to `status`: NULL means active, a
+  // timestamp means archived. An archived lead is hidden from the active list,
+  // the dashboard metrics and open follow-ups but keeps every dependent record
+  // and stays restorable. Never used for authorization — an archived lead is
+  // still readable and restorable by its own clinic.
+  archivedAt             DateTime?
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
@@ -298,6 +306,7 @@ model Lead {
   @@index([clinicId])
   @@index([clinicId, createdAt])
   @@index([clinicId, status])
+  @@index([clinicId, archivedAt])
   @@map("lead")
 }
 

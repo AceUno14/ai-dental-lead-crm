@@ -2,7 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { LeadFilters } from "@/components/leads/lead-filters";
-import { PriorityBadge, ScoreBadge, StatusBadge } from "@/components/leads/lead-badges";
+import {
+  ArchiveBadge,
+  PriorityBadge,
+  ScoreBadge,
+  StatusBadge,
+} from "@/components/leads/lead-badges";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { requireClinicContext } from "@/lib/auth/clinic";
 import { listClinicLeads } from "@/lib/services/leads";
@@ -20,7 +25,17 @@ function formatDate(value: Date): string {
   }).format(value);
 }
 
-type SearchParams = Promise<{ status?: string; priority?: string; search?: string }>;
+type SearchParams = Promise<{
+  status?: string;
+  priority?: string;
+  search?: string;
+  archived?: string;
+}>;
+
+/** Only the two defined non-default views are accepted; anything else is active-only. */
+function resolveArchiveView(value: string): "archived" | "all" | "" {
+  return value === "archived" || value === "all" ? value : "";
+}
 
 export default async function LeadsPage({ searchParams }: { searchParams: SearchParams }) {
   const { clinic } = await requireClinicContext();
@@ -29,31 +44,44 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
   const status = params.status?.trim() ?? "";
   const priority = params.priority?.trim() ?? "";
   const search = params.search?.trim() ?? "";
+  const archived = resolveArchiveView(params.archived?.trim() ?? "");
 
   const leads = await listClinicLeads(clinic.id, {
     status: status || undefined,
     priority: priority || undefined,
     search: search || undefined,
+    archived: archived || undefined,
   });
+
+  const viewingArchive = archived !== "";
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Leads</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Newest first. Every lead belongs to {clinic.name}.
+          {viewingArchive
+            ? "Archived leads are hidden from the dashboard and the open follow-up queue. Nothing has been deleted."
+            : `Newest first, excluding archived leads. Every lead belongs to ${clinic.name}.`}
         </p>
       </div>
 
       <Card>
         <CardBody>
-          <LeadFilters status={status} priority={priority} search={search} />
+          <LeadFilters
+            status={status}
+            priority={priority}
+            search={search}
+            archived={archived}
+          />
         </CardBody>
       </Card>
 
       <Card>
         <CardHeader
-          title={`${leads.length} ${leads.length === 1 ? "lead" : "leads"}`}
+          title={`${leads.length} ${leads.length === 1 ? "lead" : "leads"}${
+            archived === "archived" ? " (archived)" : ""
+          }`}
           description={leads.length === 100 ? "Showing the 100 most recent leads." : undefined}
         />
 
@@ -85,6 +113,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <PriorityBadge priority={lead.analysis?.priority ?? null} />
+                      {lead.archivedAt ? <ArchiveBadge /> : null}
                       <StatusBadge status={lead.status} />
                       <span className="text-xs text-slate-500">{formatDate(lead.createdAt)}</span>
                     </div>
@@ -121,12 +150,15 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   {leads.map((lead) => (
                     <tr key={lead.id} className="hover:bg-slate-50">
                       <td className="px-5 py-3">
-                        <Link
-                          href={`/leads/${lead.id}`}
-                          className="font-medium text-slate-900 hover:text-sky-700"
-                        >
-                          {lead.name}
-                        </Link>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Link
+                            href={`/leads/${lead.id}`}
+                            className="font-medium text-slate-900 hover:text-sky-700"
+                          >
+                            {lead.name}
+                          </Link>
+                          {lead.archivedAt ? <ArchiveBadge /> : null}
+                        </div>
                       </td>
                       <td className="px-5 py-3 text-slate-600">
                         {serviceInterestLabel(lead.serviceInterest)}

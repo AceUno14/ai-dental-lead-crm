@@ -7,14 +7,26 @@ import { LEAD_STATUS_LABELS } from "@/lib/lead-labels";
 const STATUS_OPTIONS = Object.entries(LEAD_STATUS_LABELS);
 const PRIORITY_OPTIONS = ["HOT", "WARM", "COLD"];
 
+/**
+ * Archived leads are reachable only through this filter, so they never clutter
+ * the working queue — but they are never hidden from staff either.
+ */
+const ARCHIVE_OPTIONS = [
+  { value: "", label: "Active leads" },
+  { value: "archived", label: "Archived" },
+  { value: "all", label: "All leads" },
+];
+
 export function LeadFilters({
   status = "",
   priority = "",
   search = "",
+  archived = "",
 }: {
   status?: string;
   priority?: string;
   search?: string;
+  archived?: string;
 }) {
   return (
     <form method="get" className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -37,6 +49,17 @@ export function LeadFilters({
           {PRIORITY_OPTIONS.map((value) => (
             <option key={value} value={value}>
               {value}
+            </option>
+          ))}
+        </Select>
+      </div>
+
+      <div className="sm:w-36">
+        <Label htmlFor="filter-archived">View</Label>
+        <Select id="filter-archived" name="archived" defaultValue={archived} className="mt-1.5">
+          {ARCHIVE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
             </option>
           ))}
         </Select>

@@ -192,10 +192,18 @@ export async function setFollowUpTaskStatus(input: {
 /**
  * Open tasks across the clinic, due-soonest first. Powers the dashboard's
  * "follow-ups due" card.
+ *
+ * Tasks belonging to an archived lead are excluded: the lead was deliberately
+ * filed away, so its follow-ups are not outstanding work. The rows themselves
+ * are untouched and come back with the lead when it is restored.
  */
 export async function listClinicFollowUps(clinicId: string) {
   return prisma.followUpTask.findMany({
-    where: { clinicId, status: FollowUpTaskStatus.OPEN },
+    where: {
+      clinicId,
+      status: FollowUpTaskStatus.OPEN,
+      lead: { archivedAt: null },
+    },
     orderBy: { dueAt: "asc" },
     take: 20,
     select: {

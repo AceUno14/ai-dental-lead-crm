@@ -4,6 +4,198 @@ Most recent session first.
 
 ---
 
+# SESSION 20 — PRODUCTION ROLLOUT: LEAD ARCHIVE / RESTORE MIGRATION
+
+Date: 2026-09-14 · Scope: apply the one pending migration to production · STATUS: **PASS — applied
+exactly once after explicit user authorization and a read-only pre-flight. Nothing was committed,
+pushed or deployed to Vercel, and no application row was created, archived or deleted.**
+
+## Authorization and pre-flight (read-only)
+
+The user explicitly authorized applying the single pending migration to production. Before any write:
+
+- Identity was re-checked with the inherited environment intact
+  (`npx tsx scripts/db-identity.mts cli`): `DATABASE_URL` inherited before loading — YES; inherited
+  fingerprint **`46bfa2c59fb1`** (the known production fingerprint; host
+  `ep-mute-scene-b34nnrn8-pooler…`, database `neondb`, schema `public`); `.env.local` still
+  fingerprints **`24ea81a95814`** (development), so dotenv did not override the inherited URL and
+  the CLI genuinely targeted production. Only SHA-256 fingerprints were printed.
+- `npx prisma migrate status` — 5 migrations found, and the ONLY pending migration was
+  `20260914120000_lead_archive_restore`.
+- `prisma/migrations/20260914120000_lead_archive_restore/migration.sql` was re-read and scanned: it
+  contains exactly four additive statements (two `ALTER TYPE … ADD VALUE`, one nullable
+  `ALTER TABLE "lead" ADD COLUMN`, one `CREATE INDEX`) and **zero** `DROP` / `DELETE` / `TRUNCATE` /
+  `UPDATE` / `INSERT` / `RESET`.
+- Pre-write baseline row counts: lead 19, lead_analysis 18, follow_up_task 12, lead_note 4,
+  lead_activity 91, clinic 2, user 2. All four lead cascade FKs confirmed
+  `ON DELETE CASCADE ON UPDATE CASCADE`. All five polished SmileWorks demo leads present
+  (`Emeily grace`, `Maria`, `Sofia Reyes`, `Daniel Cruz`, `Mia Santos`).
+
+## Migration
+
+`npx prisma migrate deploy` was run **exactly once** against the verified production fingerprint and
+reported "Applying migration `20260914120000_lead_archive_restore`" → "All migrations have been
+successfully applied."
+
+Deliberately NOT run: `migrate dev`, `migrate resolve`, `db:seed`, any manual SQL write, any archive
+or deletion, `git commit`, `git push`, and no Vercel deployment.
+
+## Post-migration verification (read-only)
+
+- `npx prisma migrate status` — "Database schema is up to date!" (5/5 applied)
+- `lead.archivedAt` — PRESENT, `timestamp(3)`, nullable, no default
+- `ActivityType` — `LEAD_ARCHIVED` and `LEAD_RESTORED` present
+- `lead_clinicId_archivedAt_idx` — PRESENT
+  (`CREATE INDEX … ON public.lead USING btree ("clinicId", "archivedAt")`)
+- Row counts — **unchanged**: lead 19, lead_analysis 18, follow_up_task 12, lead_note 4,
+  lead_activity 91, clinic 2, user 2
+- Lead cascade FKs — unchanged, still `ON DELETE CASCADE`
+- All five polished SmileWorks demo leads present with `archivedAt` NULL; 0 leads archived overall
+- No application data was created, archived or deleted; no PII or secret was logged
+
+## Still open
+
+A manual smoke test of the archive / restore / permanent-delete UI against production has not been
+performed. No code was committed or deployed in this session.
+
+---
+
+# SESSION 19 — LEAD ARCHIVE / RESTORE + OWNER-ONLY PERMANENT DELETE (DEVELOPMENT, THEN PRODUCTION)
+
+Date: 2026-09-14 · Scope: CRM cleanup behaviour (T-046) · STATUS: **PASS — implemented and fully
+verified on the development database, then rolled out to production in session 20 after explicit
+authorization. One additive migration was created, applied to DEVELOPMENT, and later applied to
+PRODUCTION exactly once. Nothing was ever committed, pushed or deployed to Vercel.**
+
+## Requested behaviour and design
+
+Two different operations, deliberately not merged into one button:
+
+- **Archive** — the normal cleanup action. Reversible, deletes nothing, and orthogonal to
+  `LeadStatus` (a WON lead can be archived; a LOST one can be restored). An archived lead keeps its
+  status, its AI analysis, its follow-up tasks, its notes and its full activity history; it leaves
+  only the *views* (default lead list, dashboard metrics, recent leads, open follow-up queue) and a
+  dedicated Archived filter on the leads page brings it back into sight.
+- **Permanent delete** — a separate destructive action, OWNER only, tenant-scoped, and guarded by a
+  typed confirmation.
+
+## Database safety (the inherited-environment trap)
+
+`DATABASE_URL` was **unset for every command** and re-resolved from `.env.local`:
+
+- `npx tsx scripts/db-identity.mts e2e` — `DATABASE_URL inherited before loading: NO`, development
+  fingerprint **`24ea81a95814`** (`.env.local`), database `neondb`, schema `public`, PostgreSQL 18.6.
+  Both follow-up-task FKs are correct.
+- Production (`46bfa2c59fb1`, host `ep-mute-scene-b34nnrn8-pooler…`) was never connected to. The
+  production value is a different host from the development one used here
+  (`ep-solitary-morning-b3obyimv-pooler…`).
+
+## Schema and migration
+
+One new forward migration: `prisma/migrations/20260914120000_lead_archive_restore/migration.sql`
+
+- `ALTER TYPE "ActivityType" ADD VALUE 'LEAD_ARCHIVED'` and `'LEAD_RESTORED'`
+- `ALTER TABLE "lead" ADD COLUMN "archivedAt" TIMESTAMP(3)` (nullable; NULL = active)
+- `CREATE INDEX "lead_clinicId_archivedAt_idx" ON "lead"("clinicId", "archivedAt")`
+
+No previous migration was edited, no column/enum value was dropped, no backfill was needed and the
+database was not reset. `npx prisma migrate deploy` applied it to development
+("All migrations have been successfully applied"); `npx prisma migrate status` then reports
+"Database schema is up to date!". `prisma format` / `validate` / `generate` all PASS.
+
+**Production rollout**: `20260914120000_lead_archive_restore` was applied to production in session
+20 (2026-09-14) after explicit user authorization and a read-only pre-flight — see the session 20
+entry at the top of this file. Production schema is now up to date.
+
+## What changed
+
+- `lib/services/lead-workflow.ts` — `archiveLead`, `restoreLead` (shared guarded-state helper: the
+  lead is resolved by id AND clinicId, and the write is an `updateMany` whose WHERE clause includes
+  the current archive state, so a repeat is a no-op with no duplicate timeline entry) and
+  `permanentlyDeleteLead`.
+- `lib/services/leads.ts` — `archived` list filter (`archived` / `all` / default active-only, with
+  anything unrecognised falling back to active-only), archive predicates on every dashboard metric
+  and the recent-leads list, and archived leads excluded from duplicate detection so an archived
+  enquiry cannot swallow a new one from the same patient.
+- `lib/services/follow-up-tasks.ts` — `listClinicFollowUps` excludes tasks of archived leads (the
+  rows are kept; they come back with the lead on restore).
+- `lib/validation/lead-actions.ts` — `archiveLeadSchema`, `restoreLeadSchema`, `deleteLeadSchema`.
+- `app/(crm)/leads/actions.ts` — `archiveLeadAction`, `restoreLeadAction` (reversible, revalidate the
+  lead/list/dashboard) and `deleteLeadAction` (owner check first, then redirect to `/leads` because
+  the detail page no longer exists).
+- `lib/auth/clinic.ts` — `isClinicOwner`.
+- UI — new `components/leads/lead-actions-menu.tsx` (“More actions”: Archive or Restore, plus a
+  collapsed destructive section for owners), `lead-filters.tsx` (View filter), `lead-badges.tsx`
+  (`ArchiveBadge`), `activity-timeline.tsx` (labels/tones for the two new activity types), the lead
+  detail page (ARCHIVED banner, badge, More actions card) and the leads list (badges, archived view).
+
+## Owner enforcement (permanent delete)
+
+- `deleteLeadAction` reads the role from the membership resolved server-side by
+  `requireClinicContext`; a browser-supplied role is never read.
+- `permanentlyDeleteLead` independently re-reads an `OWNER` membership from the `membership` table
+  for the requested clinic + user before doing anything, so the destructive service is safe even if a
+  future caller forgets the action-level check.
+- The lead is resolved by id AND clinicId, and the delete itself is a clinic-scoped `deleteMany`.
+- Confirmation: `DELETE` or the lead's exact name (compared server-side against the stored name).
+  The confirmation value is never logged; no PII from the deleted lead is logged anywhere.
+
+## Cascade verification (before implementing delete)
+
+The live constraints were read from `pg_constraint` first, and the same check now runs as an
+assertion in `verify:e2e` section 14a *before* any delete:
+
+- `lead_analysis_leadId_fkey` → `lead(id)` ON DELETE CASCADE
+- `lead_note_leadId_fkey` → `lead(id)` ON DELETE CASCADE
+- `lead_activity_leadId_fkey` → `lead(id)` ON DELETE CASCADE
+- `follow_up_task_lead_fkey` → `lead(id)` ON DELETE CASCADE
+- `follow_up_task_analysis_fkey` → `lead_analysis("leadId")` ON DELETE CASCADE
+
+Because every dependent already cascades, permanent deletion is one clinic-scoped `deleteMany` and a
+hand-written multi-table delete was deliberately NOT added.
+
+## Verification (development only)
+
+- `npx prisma format` / `validate` / `generate` — PASS
+- `npx prisma migrate deploy` — PASS (development only); `migrate status` — "Database schema is up to
+  date!"
+- `npx tsc --noEmit` — PASS (exit 0)
+- `npm run lint` — PASS (0 problems)
+- `npm run build` — PASS (compiled; TypeScript finished; 8/8 static pages, 9 routes)
+- `npm run verify:e2e` — **PASS 148 checks, 0 failures** (was 84; 64 new) on the identity-verified
+  development branch, including section 0 (database identity guard: the development fingerprint is
+  required and a non-development connection string is refused) and section 14 (archive preserves the
+  lead and every dependent row; archived leads leave the default list, the dashboard metrics, recent
+  leads and open follow-ups; the Archived filter finds them and the All filter shows both; an
+  unrecognised filter falls back to active-only; restore restores visibility and metrics; cross-clinic
+  archive and restore both rejected; STAFF and ADMIN permanent delete both rejected; the owner's
+  mistyped confirmation rejected; cross-clinic delete rejected; owner delete succeeds and the cascade
+  empties analysis/tasks/notes/activity while a sibling lead in the same clinic and another clinic's
+  lead keep their rows; all 5 pre-existing demo leads verified unarchived and present at the end).
+- The e2e run creates its own clinics/users/leads and removes them again; the development database
+  still holds exactly its 5 pre-existing leads, 2 clinics, 2 users, 0 archived leads and 0 leftover
+  `e2e-*` clinics.
+
+## Not done (deliberately)
+
+- No production migration, no production query, no Vercel change, no commit, no push, no deploy.
+- `prisma migrate dev` was NOT used (it would need a shadow database); the migration was applied with
+  `prisma migrate deploy`.
+- `db:seed` and `migrate resolve` were NOT run, and no demo/portfolio lead was archived or deleted.
+- No fabricated deletion audit row: nothing is written after a permanent delete.
+
+## Secrets
+
+No `DATABASE_URL`, API key, auth secret or password was printed, logged, or committed. Only SHA-256
+fingerprints of the connection string are ever shown.
+
+## Next action
+
+Apply `20260914120000_lead_archive_restore` to production — only with explicit user authorization —
+then re-check `npx prisma migrate status` on production and smoke-test archive/restore there.
+
+---
+
 # SESSION 18 — FINAL PRODUCTION CLOSEOUT: FIRST-SUBMISSION FIX VERIFIED LIVE, MVP COMPLETE
 
 Date: 2026-09-14 · Scope: documentation closeout only, after the user manually verified the production

@@ -30,6 +30,11 @@ export type LeadListFilters = {
   status?: string;
   priority?: string;
   search?: string;
+  /**
+   * Archived-lead view: "archived" = archived only, "all" = both, anything else
+   * (including undefined) = the default active-only queue.
+   */
+  archived?: string;
 };
 
 export type ActionState = {

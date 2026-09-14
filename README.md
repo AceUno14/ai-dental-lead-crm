@@ -118,6 +118,8 @@ MVP features include:
 - Lead filters
 - Lead detail pages
 - Lead status workflow
+- Lead archive / restore (reversible, non-destructive CRM cleanup)
+- Owner-only permanent lead deletion (soft-guarded by a typed confirmation)
 - Internal staff notes
 - Activity timeline
 - AI retry functionality
@@ -374,6 +376,18 @@ follow-up task creation and retry idempotency (no duplicate open tasks, no resur
 completed ones), staff task completion, email alert decisioning and content, and the new
 activity timeline events.
 
+Section 0 refuses to run at all unless `DATABASE_URL` fingerprints as the development branch
+(`24ea81a95814`) — this machine's inherited environment may point at production (`46bfa2c59fb1`), and
+the script writes to the database, so it stops before the first query rather than guessing.
+
+The archive/delete sections verify the CRM cleanup workflow with their own generated fixtures (never
+the demo leads): archiving preserves the lead and every dependent record while removing it from the
+default list, the dashboard metrics, the recent-leads panel and the open follow-up queue; the
+Archived filter finds it and restore brings it back; a cross-clinic archive or restore is rejected;
+STAFF and ADMIN cannot permanently delete a lead and neither can an owner with a mistyped
+confirmation; an owner's delete succeeds, the verified `ON DELETE CASCADE` constraints remove the
+analysis, tasks, notes and activity, and sibling leads plus other clinics are untouched.
+
 The patient-reported answer sections verify the public form's two optional questions end to end:
 insurance YES/NO/omitted and payment preference SELF_PAY/FINANCING/omitted persist correctly
 (omitted or empty safely becomes `UNKNOWN`), an explicit answer reaches AI qualification, a
@@ -383,10 +397,11 @@ database in `npm run verify:ai`.
 
 MIGRATION REQUIREMENT: the dental conversion migrations
 `prisma/migrations/20260913000000_dental_conversion_workflow`,
-`prisma/migrations/20260913120000_fix_followup_analysis_fk` and
-`prisma/migrations/20260914000000_patient_insurance_payment_preference` must be applied to the
-database BEFORE running `verify:e2e`, `db:seed`, or using the follow-up task / email alert /
-patient-reported answer workflow against that database. Every migration is additive (new enums,
+`prisma/migrations/20260913120000_fix_followup_analysis_fk`,
+`prisma/migrations/20260914000000_patient_insurance_payment_preference` and
+`prisma/migrations/20260914120000_lead_archive_restore` must be applied to the database BEFORE
+running `verify:e2e`, `db:seed`, or using the follow-up task / email alert / patient-reported answer
+/ archive workflow against that database. Every migration is additive (new enums,
 new defaulted LeadAnalysis/Lead columns, new `follow_up_task` table) and requires no data changes
 and no backfill.
 

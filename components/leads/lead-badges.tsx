@@ -38,6 +38,14 @@ export function StatusBadge({ status }: { status: LeadStatus }) {
   );
 }
 
+/**
+ * Marks a lead that has been filed away. Archiving is orthogonal to the CRM
+ * status, so the two badges are shown together.
+ */
+export function ArchiveBadge() {
+  return <Badge className="bg-amber-50 text-amber-700 ring-amber-200">Archived</Badge>;
+}
+
 export function ScoreBadge({ score }: { score: number | null | undefined }) {
   if (score === null || score === undefined) {
     return <span className="text-sm text-slate-400">—</span>;

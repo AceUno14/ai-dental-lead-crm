@@ -62,9 +62,13 @@ export async function createPublicLead(input: {
 
 /**
  * Lead list for a clinic, newest first, with optional status/priority filters.
+ *
+ * Archived leads are excluded by default: archiving is the normal CRM cleanup
+ * action, so the default view stays the working queue. `filters.archived`
+ * switches that: "archived" shows only archived leads, "all" shows both.
  */
 export async function listClinicLeads(clinicId: string, filters: LeadListFilters = {}) {
-  const where: Prisma.LeadWhereInput = { clinicId };
+  const where: Prisma.LeadWhereInput = { clinicId, ...archivedLeadFilter(filters.archived) };
 
   if (filters.status && isLeadStatus(filters.status)) {
     where.status = filters.status;
@@ -94,6 +98,7 @@ export async function listClinicLeads(clinicId: string, filters: LeadListFilters
       serviceInterest: true,
       status: true,
       submittedUrgency: true,
+      archivedAt: true,
       createdAt: true,
       analysis: {
         select: {
@@ -104,6 +109,25 @@ export async function listClinicLeads(clinicId: string, filters: LeadListFilters
       },
     },
   });
+}
+
+/**
+ * Translates the archived-lead view filter into a `where` fragment.
+ *
+ * Anything unrecognised — including a missing value and a browser-supplied
+ * value that was tampered with — falls back to the active-only default, so a
+ * malformed query string can never widen a query by accident.
+ */
+function archivedLeadFilter(archived: string | undefined): Prisma.LeadWhereInput {
+  if (archived === "archived") {
+    return { archivedAt: { not: null } };
+  }
+
+  if (archived === "all") {
+    return {};
+  }
+
+  return { archivedAt: null };
 }
 
 /**
@@ -135,10 +159,13 @@ export type ClinicLeadDetail = NonNullable<
 >;
 
 /**
- * Dashboard counters. Every query is scoped to the authorized clinic.
+ * Dashboard counters. Every query is scoped to the authorized clinic, and
+ * archived leads are excluded from the metrics and the recent list: they belong
+ * to a separate, explicitly requested view. Nothing about them is deleted.
  */
 export async function getDashboardData(clinicId: string) {
   const now = new Date();
+  const activeLead = { clinicId, archivedAt: null } as const;
 
   const [
     totalLeads,
@@ -148,15 +175,20 @@ export async function getDashboardData(clinicId: string) {
     followUpsDue,
     recentLeads,
   ] = await Promise.all([
-    prisma.lead.count({ where: { clinicId } }),
-    prisma.lead.count({ where: { clinicId, status: "NEW" } }),
-    prisma.lead.count({ where: { clinicId, analysis: { priority: "HOT" } } }),
-    prisma.lead.count({ where: { clinicId, status: "APPOINTMENT_SET" } }),
+    prisma.lead.count({ where: { ...activeLead } }),
+    prisma.lead.count({ where: { ...activeLead, status: "NEW" } }),
+    prisma.lead.count({ where: { ...activeLead, analysis: { priority: "HOT" } } }),
+    prisma.lead.count({ where: { ...activeLead, status: "APPOINTMENT_SET" } }),
     prisma.followUpTask.count({
-      where: { clinicId, status: "OPEN", dueAt: { lte: now } },
+      where: {
+        clinicId,
+        status: "OPEN",
+        dueAt: { lte: now },
+        lead: { archivedAt: null },
+      },
     }),
     prisma.lead.findMany({
-      where: { clinicId },
+      where: { ...activeLead },
       orderBy: { createdAt: "desc" },
       take: 5,
       select: {
@@ -193,6 +225,10 @@ export async function getDashboardData(clinicId: string) {
 /**
  * Detects an accidental double submission of the same enquiry.
  * Returns the existing lead id when a matching recent submission exists.
+ *
+ * Archived leads are ignored on purpose: a patient whose old enquiry was filed
+ * away must still be able to submit a new one, otherwise the re-enquiry would be
+ * swallowed by duplicate protection and never reach staff.
  */
 export async function findRecentDuplicateLead(input: {
   clinicId: string;
@@ -207,6 +243,7 @@ export async function findRecentDuplicateLead(input: {
       clinicId: input.clinicId,
       email: input.email,
       message: input.message,
+      archivedAt: null,
       createdAt: { gte: since },
     },
     select: { id: true },

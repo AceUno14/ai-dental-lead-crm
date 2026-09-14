@@ -1133,6 +1133,93 @@ Consequences:
 
 ---
 
+# D-049 — Archive Is The Default Cleanup; Permanent Delete Is Owner-only And Cascade-backed
+
+Status: ACCEPTED (Session 19)
+
+Context:
+
+A CRM needs a way to clear leads out of the working pipeline without destroying history, and
+occasionally a genuinely destructive "remove this row and everything attached to it" action that must
+be impossible to trigger by accident or by the wrong role. The existing model had only
+`LeadStatus`, which is a sales stage (NEW → CONTACTED → APPOINTMENT_SET → WON/LOST) and therefore the
+wrong place for "filed away": a lead can be LOST *and* archived, or WON *and* archived.
+
+Decision:
+
+1. **`Lead.archivedAt DateTime?` is the archive state**, orthogonal to `LeadStatus`. NULL means
+   active; a timestamp means archived. The migration is additive (no backfill: existing rows are
+   active), and the column is indexed as `(clinicId, archivedAt)` because every lead list, dashboard
+   metric and open-follow-up query now carries that predicate.
+2. **Archiving hides, it never deletes.** An archived lead keeps its `LeadAnalysis`, `FollowUpTask`
+   rows, `LeadNote` rows and full `LeadActivity` history, and it keeps its `LeadStatus`. It is
+   excluded only from the *views*: the default lead list, the dashboard metrics, the recent-leads
+   panel, and the open follow-up queue. A dedicated `archived` filter (`archived` / `all`) makes the
+   leads reachable, and the detail page shows an explicit ARCHIVED state with a restore action.
+3. **Archive/restore are ordinary, clinic-scoped staff mutations** in
+   `lib/services/lead-workflow.ts`, alongside `updateLeadStatus` and `addLeadNote`. The lead is
+   resolved by lead id AND clinic id, so another clinic's lead is indistinguishable from a missing
+   one, and the write itself is a guarded `updateMany` whose WHERE clause includes the current
+   archive state — so a repeated archive/restore is a no-op instead of a duplicate timeline entry.
+4. **Archive and restore are recorded on the activity timeline** through two new `ActivityType`
+   values (`LEAD_ARCHIVED`, `LEAD_RESTORED`) added by the same forward migration, with the acting
+   user attached. Permanent deletion records nothing: once the row (and its cascade) is gone there is
+   no honest place to write, and inventing a posthumous audit entry would be fiction.
+5. **Permanent deletion is OWNER-only, enforced twice, server-side.** `deleteLeadAction` checks the
+   membership role resolved server-side by `requireClinicContext`, and `permanentlyDeleteLead`
+   independently re-reads the OWNER membership from the `membership` table before deleting anything.
+   A role supplied by a form field, an action argument or a cookie is never trusted. ADMIN and STAFF
+   are rejected. The UI hides the destructive control from non-owners, but that is presentation only.
+6. **Permanent deletion also requires an explicit typed confirmation**: the caller must send `DELETE`
+   or the lead's exact name, compared server-side against the stored name. The confirmation value is
+   never logged, and neither is any other field of the deleted lead.
+7. **The delete is a single clinic-scoped `deleteMany`; dependents cascade in the database.**
+   `lead_analysis`, `lead_note`, `lead_activity`, `follow_up_task` (both the lead FK and the analysis
+   FK) already reference the lead with `ON DELETE CASCADE`. Those constraints are re-read from the
+   live schema and asserted in `verify:e2e` section 14a *before* any delete runs, and section 14g
+   then proves each dependent table reaches zero while sibling leads and other clinics keep their
+   rows. No hand-written multi-table delete exists that could drift out of sync with the constraints.
+8. **Archiving does not touch follow-up tasks.** It would be easy to cancel them, but cancelling is
+   state loss; instead the queries that build the working views exclude tasks whose lead is archived,
+   so restoring the lead restores its outstanding work with it.
+9. **Duplicate-submission detection ignores archived leads.** Otherwise a patient whose old enquiry
+   was archived could never submit a new one — the new enquiry would be matched to the archived lead
+   and silently discarded.
+10. **Scripts that write refuse to run outside development.** `npm run verify:e2e` and
+    `scripts/db-identity.mts` compare a SHA-256 fingerprint of `DATABASE_URL` against the development
+    fingerprint (`24ea81a95814`) and abort before the first query otherwise; the inherited production
+    value (`46bfa2c59fb1`) is never accepted. Neither script ever prints the connection string.
+
+Reason:
+
+"Cleanup" and "destroy" are different operations with different risk, and collapsing them into one
+button forces staff to choose between a cluttered working list and permanent data loss. A nullable
+archive column is the smallest schema change that separates the two, keeps the audit trail intact,
+and leaves `LeadStatus` doing the job it was defined for. For the irreversible action, defense in
+depth beats a single check: role resolution at the action boundary *and* against the database, plus a
+consent value derived from the row being destroyed.
+
+Consequences:
+
+- No large red delete button sits in the normal lead workflow: permanent deletion lives behind a
+  collapsed "More actions → Delete permanently…" disclosure that names the analysis, tasks, notes and
+  activity history it will destroy, and states that it cannot be undone.
+- An archived lead is **not** a permission boundary. It stays fully readable, status-changeable,
+  note-able and restorable by its own clinic; archive is a view state, not access control.
+- Restoring is the documented recovery path for an accidental archive. There is no recovery path for
+  a permanent delete, by design.
+- Production must apply `20260914120000_lead_archive_restore` before the archive UI is used there.
+  The migration is additive (new nullable column, new enum values, new index), so applying it
+  changes no existing behaviour, but the actions do not exist until the column and enum values do.
+- A "who deleted this lead?" audit answer does not exist by construction. If that is ever required,
+  it must be built as a separate, non-PII deletion log — not by writing activity rows that are about
+  to be cascaded away.
+- `listClinicLeads`, `getDashboardData`, `listClinicFollowUps` and `findRecentDuplicateLead` now all
+  carry an archive predicate. Any future lead query that intentionally wants archived rows (an
+  admin/export view, for example) has to opt in explicitly.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

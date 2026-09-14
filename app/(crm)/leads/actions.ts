@@ -1,13 +1,24 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
-import { requireClinicContext } from "@/lib/auth/clinic";
+import { isClinicOwner, requireClinicContext } from "@/lib/auth/clinic";
 import { runLeadAnalysisForClinic } from "@/lib/services/lead-analysis";
-import { addLeadNote, updateLeadStatus } from "@/lib/services/lead-workflow";
+import {
+  OWNER_ONLY_DELETE_ERROR,
+  addLeadNote,
+  archiveLead,
+  permanentlyDeleteLead,
+  restoreLead,
+  updateLeadStatus,
+} from "@/lib/services/lead-workflow";
 import { setFollowUpTaskStatus } from "@/lib/services/follow-up-tasks";
 import {
+  archiveLeadSchema,
   createLeadNoteSchema,
+  deleteLeadSchema,
+  restoreLeadSchema,
   retryAnalysisSchema,
   updateFollowUpTaskSchema,
   updateLeadStatusSchema,
@@ -18,6 +29,119 @@ function revalidateLead(leadId: string) {
   revalidatePath(`/leads/${leadId}`);
   revalidatePath("/leads");
   revalidatePath("/dashboard");
+}
+
+/**
+ * Archives a lead. Reversible, non-destructive cleanup: the lead and all of its
+ * dependent records stay in the database and it can be restored at any time.
+ */
+export async function archiveLeadAction(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const context = await requireClinicContext();
+
+  const parsed = archiveLeadSchema.safeParse({ leadId: formData.get("leadId") });
+
+  if (!parsed.success) {
+    return { status: "error", message: "That lead request was not valid." };
+  }
+
+  const result = await archiveLead({
+    clinicId: context.clinic.id,
+    leadId: parsed.data.leadId,
+    actorUserId: context.userId,
+  });
+
+  if (!result.ok) {
+    return { status: "error", message: result.error };
+  }
+
+  revalidateLead(parsed.data.leadId);
+  return {
+    status: "success",
+    message: "Lead archived. Nothing was deleted — you can restore it any time.",
+  };
+}
+
+/**
+ * Restores an archived lead so it is visible in the lead list, the dashboard
+ * metrics and the open follow-up queue again.
+ */
+export async function restoreLeadAction(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const context = await requireClinicContext();
+
+  const parsed = restoreLeadSchema.safeParse({ leadId: formData.get("leadId") });
+
+  if (!parsed.success) {
+    return { status: "error", message: "That lead request was not valid." };
+  }
+
+  const result = await restoreLead({
+    clinicId: context.clinic.id,
+    leadId: parsed.data.leadId,
+    actorUserId: context.userId,
+  });
+
+  if (!result.ok) {
+    return { status: "error", message: result.error };
+  }
+
+  revalidateLead(parsed.data.leadId);
+  return { status: "success", message: "Lead restored and visible again." };
+}
+
+/**
+ * Permanently deletes one clinic-owned lead, together with its AI analysis,
+ * follow-up tasks, notes and activity history (removed by the database's own
+ * cascade constraints).
+ *
+ * OWNER only. The role is taken from the membership resolved server-side by
+ * `requireClinicContext` — a role from the browser is never read — and the
+ * service layer independently re-checks the OWNER membership against the
+ * database before it deletes anything. The confirmation value is never logged.
+ */
+export async function deleteLeadAction(
+  _previousState: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const context = await requireClinicContext();
+
+  if (!isClinicOwner(context.role)) {
+    return { status: "error", message: OWNER_ONLY_DELETE_ERROR };
+  }
+
+  const parsed = deleteLeadSchema.safeParse({
+    leadId: formData.get("leadId"),
+    confirmation: formData.get("confirmation"),
+  });
+
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: "Type DELETE to confirm permanent deletion.",
+    };
+  }
+
+  const result = await permanentlyDeleteLead({
+    clinicId: context.clinic.id,
+    leadId: parsed.data.leadId,
+    actorUserId: context.userId,
+    confirmation: parsed.data.confirmation,
+  });
+
+  if (!result.ok) {
+    return { status: "error", message: result.error };
+  }
+
+  // The lead no longer exists, so its detail page cannot be revalidated.
+  revalidatePath("/leads");
+  revalidatePath("/dashboard");
+
+  redirect("/leads");
 }
 
 export async function updateLeadStatusAction(

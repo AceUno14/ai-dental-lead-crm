@@ -507,6 +507,33 @@ clinic-scoped server actions. See DECISIONS.md D-045.
 
 ---
 
+---
+
+# LEAD ARCHIVE AND PERMANENT DELETION
+
+Cleanup is two separate operations, never one button.
+
+**Archive** is the normal action and is reversible. `Lead.archivedAt` (nullable; NULL = active) is
+deliberately orthogonal to `LeadStatus`: a lead keeps its NEW/CONTACTED/APPOINTMENT_SET/WON/LOST
+status while archived, and it keeps its `LeadAnalysis`, `FollowUpTask` rows, `LeadNote` rows and full
+`LeadActivity` history. Archiving changes only which *views* see it — the default lead list, the
+dashboard metrics, the recent-leads panel and the open follow-up queue exclude archived leads, and
+the leads page reaches them through its Archived filter. `restoreLead` clears `archivedAt` and the
+lead returns everywhere it was. Both actions are ordinary clinic-scoped staff mutations, recorded on
+the timeline as `LEAD_ARCHIVED` / `LEAD_RESTORED`. Archive is a view state, never a permission
+boundary: an archived lead stays readable, status-changeable and note-able by its own clinic.
+
+**Permanent deletion** is a destructive, OWNER-only action (`permanentlyDeleteLead` + the
+`deleteLeadAction` server action). The role is resolved server-side from the `membership` table
+twice — at the action boundary and again inside the service — and the caller must also send `DELETE`
+or the lead's exact name, so neither a wrong role nor a stray click can destroy a lead. The delete
+itself is a single clinic-scoped row delete: every dependent table (`lead_analysis`, `lead_note`,
+`lead_activity`, `follow_up_task`) already references the lead with `ON DELETE CASCADE`, which
+`scripts/verify-e2e.mts` asserts against the live constraints before deleting anything. Nothing is
+written after the row is gone, so there is no fabricated post-deletion audit entry.
+
+---
+
 # EMAIL ALERT LAYER
 
 Provider abstraction in lib/email/email.ts (mock | live via EMAIL_MODE, Resend in live mode).

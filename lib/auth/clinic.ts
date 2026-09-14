@@ -84,3 +84,11 @@ export async function requireSessionUser() {
 export function isClinicManager(role: MembershipRole): boolean {
   return role === "OWNER" || role === "ADMIN";
 }
+
+/**
+ * Permanent deletion is OWNER-only. The role comes from the membership resolved
+ * server-side by `getClinicContext`; a role sent by the browser is never read.
+ */
+export function isClinicOwner(role: MembershipRole): boolean {
+  return role === "OWNER";
+}

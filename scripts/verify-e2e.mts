@@ -15,10 +15,39 @@
  *
  * Also asserts tenant isolation for the lead detail query.
  *
+ * Section 14 covers the CRM cleanup workflow with its own generated fixtures:
+ * archive (reversible, non-destructive), restore, the archived-lead list /
+ * dashboard / follow-up behaviour, cross-clinic rejection, and the OWNER-only
+ * permanent deletion including the verified ON DELETE CASCADE behaviour.
+ *
  * Run: npx tsx scripts/verify-e2e.mts
  * The script cleans up the records it creates.
+ *
+ * SAFETY: this script reads and writes a real database, so it refuses to start
+ * unless DATABASE_URL is the development branch.
  */
+import { createHash } from "node:crypto";
+
 import { config as loadEnv } from "dotenv";
+
+/**
+ * The two environments are told apart by a fingerprint of the connection string
+ * itself, never by printing it. DEVELOPMENT is the only database this script may
+ * touch; PRODUCTION is the inherited-environment trap on this machine.
+ */
+const DEVELOPMENT_DATABASE_FINGERPRINT: string = "24ea81a95814";
+const PRODUCTION_DATABASE_FINGERPRINT: string = "46bfa2c59fb1";
+
+function databaseFingerprint(connectionString: string): string {
+  return createHash("sha256").update(connectionString).digest("hex").slice(0, 12);
+}
+
+function isDevelopmentDatabase(connectionString: string | undefined): boolean {
+  return (
+    typeof connectionString === "string" &&
+    databaseFingerprint(connectionString) === DEVELOPMENT_DATABASE_FINGERPRINT
+  );
+}
 
 let failures = 0;
 
@@ -36,9 +65,23 @@ async function main() {
   loadEnv({ path: ".env.local", quiet: true });
   loadEnv({ path: ".env", quiet: true });
 
-  if (!process.env.DATABASE_URL) {
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
     throw new Error("DATABASE_URL is not configured. Add it to .env.local first.");
   }
+
+  // Hard stop before a single query runs: this script writes to the database,
+  // and an inherited DATABASE_URL on this machine may point at production.
+  if (!isDevelopmentDatabase(databaseUrl)) {
+    throw new Error(
+      `Refusing to run against a non-development database (fingerprint ${databaseFingerprint(
+        databaseUrl,
+      )}, expected ${DEVELOPMENT_DATABASE_FINGERPRINT}). No query was executed.`,
+    );
+  }
+
+  console.log(`   database fingerprint: ${databaseFingerprint(databaseUrl)} (development)`);
 
   // Imported dynamically so the Prisma singleton is created after env loading.
   const { prisma } = await import("@/lib/db/prisma");
@@ -47,8 +90,16 @@ async function main() {
     "@/lib/services/leads"
   );
   const { runLeadAnalysis } = await import("@/lib/services/lead-analysis");
-  const { addLeadNote, updateLeadStatus } = await import("@/lib/services/lead-workflow");
-  const { setFollowUpTaskStatus } = await import("@/lib/services/follow-up-tasks");
+  const {
+    addLeadNote,
+    archiveLead,
+    permanentlyDeleteLead,
+    restoreLead,
+    updateLeadStatus,
+  } = await import("@/lib/services/lead-workflow");
+  const { listClinicFollowUps, setFollowUpTaskStatus } = await import(
+    "@/lib/services/follow-up-tasks"
+  );
   const { publicLeadSchema } = await import("@/lib/validation/lead");
   // The public Server Action itself, so the submission contract (not just the
   // services it calls) is exercised end to end.
@@ -60,8 +111,39 @@ async function main() {
   // Leads created by the patient-answer matrix below, cleaned up in `finally`.
   const extraLeadIds: string[] = [];
   let answerCaseCounter = 0;
+  // Clinics created by the archive/delete section, cleaned up in `finally` (the
+  // delete cascades their leads, analyses, tasks, notes and activities).
+  const archiveClinicIds: string[] = [];
+
+  // Snapshot of everything that already exists before this run creates anything:
+  // the polished demo leads. Section 14 asserts none of them was archived,
+  // deleted or otherwise changed by the test run.
+  const baselineLeads = await prisma.lead.findMany({
+    select: { id: true, archivedAt: true },
+  });
 
   try {
+    console.log("\n0. Database identity is the development branch");
+
+    check(
+      "this run is pinned to the development database (fingerprint 24ea81a95814)",
+      isDevelopmentDatabase(databaseUrl),
+      databaseFingerprint(databaseUrl),
+    );
+    check(
+      "the guard rejects a missing connection string",
+      !isDevelopmentDatabase(undefined) && !isDevelopmentDatabase(""),
+    );
+    check(
+      "the production fingerprint is not accepted by the guard",
+      PRODUCTION_DATABASE_FINGERPRINT !== DEVELOPMENT_DATABASE_FINGERPRINT &&
+        !isDevelopmentDatabase(
+          // Any string that is not the development connection string is refused;
+          // the real production URL is never needed (or printed) here.
+          "postgresql://e2e-guard:redacted@example.invalid/neondb?sslmode=require",
+        ),
+    );
+
     console.log("\n1. Visitor submits the public enquiry form");
 
     const clinic = await findPublicClinicBySlug("bright-smile-dental");
@@ -645,6 +727,543 @@ async function main() {
         process.env.AI_API_KEY = previousAiKey;
       }
     }
+
+    console.log("\n14. Lead archive / restore / permanent delete (owner only)");
+
+    // Every fixture in this section is generated here (own clinics, own users,
+    // own leads), so the polished demo leads are never archived or deleted.
+    const archiveClinic = await prisma.clinic.create({
+      data: { name: `E2E Archive Clinic ${marker}`, slug: `e2e-archive-${marker}` },
+      select: { id: true },
+    });
+    const secondClinic = await prisma.clinic.create({
+      data: { name: `E2E Archive Clinic B ${marker}`, slug: `e2e-archive-b-${marker}` },
+      select: { id: true },
+    });
+    archiveClinicIds.push(archiveClinic.id, secondClinic.id);
+
+    const archiveOwner = await prisma.user.create({
+      data: {
+        name: "E2E Archive Owner",
+        email: `e2e-archive-owner-${marker}@example.test`,
+        emailVerified: true,
+      },
+      select: { id: true },
+    });
+    const archiveAdmin = await prisma.user.create({
+      data: {
+        name: "E2E Archive Admin",
+        email: `e2e-archive-admin-${marker}@example.test`,
+        emailVerified: true,
+      },
+      select: { id: true },
+    });
+    const archiveStaff = await prisma.user.create({
+      data: {
+        name: "E2E Archive Staff",
+        email: `e2e-archive-staff-${marker}@example.test`,
+        emailVerified: true,
+      },
+      select: { id: true },
+    });
+
+    await prisma.membership.createMany({
+      data: [
+        { clinicId: archiveClinic.id, userId: archiveOwner.id, role: "OWNER" },
+        { clinicId: archiveClinic.id, userId: archiveAdmin.id, role: "ADMIN" },
+        { clinicId: archiveClinic.id, userId: archiveStaff.id, role: "STAFF" },
+        { clinicId: secondClinic.id, userId: archiveOwner.id, role: "OWNER" },
+      ],
+    });
+
+    /** One fully populated lead: analysis + AI follow-up task + note + activity. */
+    const createArchiveFixture = async (clinicId: string, label: string) => {
+      const parsed = publicLeadSchema.safeParse({
+        name: `E2E Archive ${label}`,
+        email: `e2e-archive-${label.toLowerCase()}-${marker}@example.test`,
+        phone: "555-0177",
+        serviceInterest: "dental_emergency",
+        preferredContactMethod: "PHONE",
+        urgency: "IMMEDIATE",
+        patientInsuranceStatus: "YES",
+        paymentPreference: "FINANCING",
+        message:
+          "Fixture enquiry used to verify archive, restore and permanent deletion behaviour end to end.",
+        consent: true,
+      });
+
+      if (!parsed.success) {
+        throw new Error("archive fixture failed public lead validation");
+      }
+
+      const created = await createPublicLead({ clinicId, data: parsed.data });
+      await runLeadAnalysis(created);
+      await addLeadNote({
+        clinicId,
+        leadId: created.id,
+        authorUserId: archiveOwner.id,
+        body: `Archive fixture note (${label}).`,
+      });
+      return created;
+    };
+
+    const targetLead = await createArchiveFixture(archiveClinic.id, "Target");
+    const controlLead = await createArchiveFixture(archiveClinic.id, "Control");
+    const otherClinicLead = await createArchiveFixture(secondClinic.id, "OtherClinic");
+
+    const countDependents = async (id: string) => ({
+      analyses: await prisma.leadAnalysis.count({ where: { leadId: id } }),
+      tasks: await prisma.followUpTask.count({ where: { leadId: id } }),
+      notes: await prisma.leadNote.count({ where: { leadId: id } }),
+      activities: await prisma.leadActivity.count({ where: { leadId: id } }),
+    });
+
+    console.log("\n14a. Cascade behaviour is verified before any delete");
+
+    // Read the live constraints rather than trusting the schema file. This is
+    // what makes "one delete removes everything" a verified claim: every table
+    // that references a lead must do so with ON DELETE CASCADE, otherwise a
+    // permanent delete would fail or leave orphans behind.
+    const cascadeConstraints = new Map(
+      (
+        await prisma.$queryRaw<Array<{ name: string; definition: string }>>`
+          SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+          FROM pg_constraint
+          WHERE conname IN (
+            'lead_analysis_leadId_fkey',
+            'lead_note_leadId_fkey',
+            'lead_activity_leadId_fkey',
+            'follow_up_task_lead_fkey',
+            'follow_up_task_analysis_fkey'
+          )
+        `
+      ).map((row) => [row.name, row.definition] as const),
+    );
+
+    const expectCascade = (conname: string) => {
+      const definition = cascadeConstraints.get(conname);
+      check(
+        `verified before any delete: ${conname} is ON DELETE CASCADE`,
+        Boolean(definition?.includes("ON DELETE CASCADE")),
+        definition ?? "constraint not found",
+      );
+    };
+
+    expectCascade("lead_analysis_leadId_fkey");
+    expectCascade("lead_note_leadId_fkey");
+    expectCascade("lead_activity_leadId_fkey");
+    expectCascade("follow_up_task_lead_fkey");
+    expectCascade("follow_up_task_analysis_fkey");
+
+    console.log("\n14b. Archive is reversible and deletes nothing");
+
+    const dependentsBefore = await countDependents(targetLead.id);
+    check(
+      "the fixture has an analysis, an AI task, a note and activity history",
+      dependentsBefore.analyses === 1 &&
+        dependentsBefore.tasks >= 1 &&
+        dependentsBefore.notes === 1 &&
+        dependentsBefore.activities >= 3,
+      JSON.stringify(dependentsBefore),
+    );
+
+    const dashboardBefore = await getDashboardData(archiveClinic.id);
+    check(
+      "dashboard counts both active fixture leads",
+      dashboardBefore.metrics.totalLeads === 2,
+      `totalLeads=${dashboardBefore.metrics.totalLeads}`,
+    );
+
+    const archiveResult = await archiveLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    check(
+      "the owning clinic can archive its lead",
+      archiveResult.ok,
+      archiveResult.ok ? undefined : archiveResult.error,
+    );
+
+    const archivedRow = await prisma.lead.findUnique({ where: { id: targetLead.id } });
+    check("the archived lead still exists", archivedRow !== null);
+    check("archivedAt is set", archivedRow?.archivedAt instanceof Date);
+    check(
+      "archiving leaves the CRM status untouched",
+      archivedRow?.status === targetLead.status,
+      archivedRow?.status,
+    );
+
+    const dependentsAfterArchive = await countDependents(targetLead.id);
+    check(
+      "archiving preserves the AI analysis",
+      dependentsAfterArchive.analyses === dependentsBefore.analyses,
+    );
+    check(
+      "archiving preserves the follow-up tasks",
+      dependentsAfterArchive.tasks === dependentsBefore.tasks,
+    );
+    check(
+      "archiving preserves the internal notes",
+      dependentsAfterArchive.notes === dependentsBefore.notes,
+    );
+    check(
+      "archiving deletes no activity history",
+      dependentsAfterArchive.activities >= dependentsBefore.activities,
+    );
+
+    const archiveActivity = await prisma.leadActivity.findFirst({
+      where: { leadId: targetLead.id, type: "LEAD_ARCHIVED" },
+    });
+    check(
+      "the archive is recorded on the activity timeline with its actor",
+      archiveActivity?.actorUserId === archiveOwner.id,
+      archiveActivity?.description,
+    );
+
+    const reArchive = await archiveLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    const archiveActivityCount = await prisma.leadActivity.count({
+      where: { leadId: targetLead.id, type: "LEAD_ARCHIVED" },
+    });
+    check(
+      "re-archiving is a no-op with one timeline entry",
+      reArchive.ok && archiveActivityCount === 1,
+      `count=${archiveActivityCount}`,
+    );
+
+    console.log("\n14c. Archived leads leave the working views");
+
+    const defaultList = await listClinicLeads(archiveClinic.id);
+    check(
+      "the archived lead disappears from the default leads list",
+      !defaultList.some((item) => item.id === targetLead.id),
+    );
+    check(
+      "the active control lead is still listed",
+      defaultList.some((item) => item.id === controlLead.id),
+    );
+
+    const archivedList = await listClinicLeads(archiveClinic.id, { archived: "archived" });
+    check(
+      "the Archived filter finds the archived lead",
+      archivedList.some((item) => item.id === targetLead.id),
+    );
+    check(
+      "the Archived filter excludes active leads",
+      !archivedList.some((item) => item.id === controlLead.id),
+    );
+
+    const allList = await listClinicLeads(archiveClinic.id, { archived: "all" });
+    check(
+      "the All leads filter shows active and archived leads",
+      allList.some((item) => item.id === targetLead.id) &&
+        allList.some((item) => item.id === controlLead.id),
+    );
+
+    const bogusList = await listClinicLeads(archiveClinic.id, { archived: "bogus" });
+    check(
+      "an unrecognised archive filter falls back to active-only",
+      !bogusList.some((item) => item.id === targetLead.id),
+    );
+
+    const dashboardAfterArchive = await getDashboardData(archiveClinic.id);
+    check(
+      "dashboard metrics exclude the archived lead",
+      dashboardAfterArchive.metrics.totalLeads === dashboardBefore.metrics.totalLeads - 1,
+      `totalLeads=${dashboardAfterArchive.metrics.totalLeads}`,
+    );
+    check(
+      "recent leads exclude the archived lead",
+      !dashboardAfterArchive.recentLeads.some((item) => item.id === targetLead.id),
+    );
+    check(
+      "recent leads still include the active control lead",
+      dashboardAfterArchive.recentLeads.some((item) => item.id === controlLead.id),
+    );
+
+    const openFollowUps = await listClinicFollowUps(archiveClinic.id);
+    check(
+      "open follow-ups exclude tasks of archived leads",
+      !openFollowUps.some((task) => task.lead.id === targetLead.id),
+    );
+    check(
+      "open follow-ups still include tasks of active leads",
+      openFollowUps.some((task) => task.lead.id === controlLead.id),
+    );
+
+    const archivedTaskRows = await prisma.followUpTask.count({ where: { leadId: targetLead.id } });
+    check(
+      "the archived lead's task rows were kept, not deleted",
+      archivedTaskRows >= 1,
+      `count=${archivedTaskRows}`,
+    );
+
+    console.log("\n14d. Archive and restore stay clinic-scoped");
+
+    const crossClinicArchive = await archiveLead({
+      clinicId: secondClinic.id,
+      leadId: controlLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    check(
+      "another clinic cannot archive this clinic's lead",
+      !crossClinicArchive.ok,
+      crossClinicArchive.ok ? "unexpectedly succeeded" : crossClinicArchive.error,
+    );
+    const controlAfterCrossArchive = await prisma.lead.findUnique({
+      where: { id: controlLead.id },
+    });
+    check(
+      "the rejected cross-clinic archive changed nothing",
+      controlAfterCrossArchive?.archivedAt === null,
+    );
+
+    const crossClinicRestore = await restoreLead({
+      clinicId: secondClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    check(
+      "another clinic cannot restore this clinic's archived lead",
+      !crossClinicRestore.ok,
+      crossClinicRestore.ok ? "unexpectedly succeeded" : crossClinicRestore.error,
+    );
+    const targetAfterCrossRestore = await prisma.lead.findUnique({
+      where: { id: targetLead.id },
+    });
+    check(
+      "the archived lead stays archived after the rejected restore",
+      targetAfterCrossRestore?.archivedAt instanceof Date,
+    );
+
+    const ownClinicArchive = await archiveLead({
+      clinicId: secondClinic.id,
+      leadId: otherClinicLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    check(
+      "archive works inside the lead's own clinic",
+      ownClinicArchive.ok,
+      ownClinicArchive.ok ? undefined : ownClinicArchive.error,
+    );
+    const secondClinicActive = await listClinicLeads(secondClinic.id);
+    check(
+      "that archive affects only its own clinic's list",
+      secondClinicActive.length === 0,
+      `count=${secondClinicActive.length}`,
+    );
+    check(
+      "the first clinic's list is unaffected by the second clinic",
+      (await listClinicLeads(archiveClinic.id)).some((item) => item.id === controlLead.id),
+    );
+
+    console.log("\n14e. Restore returns the lead to normal visibility");
+
+    const restoreResult = await restoreLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    check(
+      "the owning clinic can restore its archived lead",
+      restoreResult.ok,
+      restoreResult.ok ? undefined : restoreResult.error,
+    );
+
+    const restoredRow = await prisma.lead.findUnique({ where: { id: targetLead.id } });
+    check("restoring clears archivedAt", restoredRow?.archivedAt === null);
+
+    const restoreActivity = await prisma.leadActivity.findFirst({
+      where: { leadId: targetLead.id, type: "LEAD_RESTORED" },
+    });
+    check(
+      "the restore is recorded on the activity timeline",
+      restoreActivity?.actorUserId === archiveOwner.id,
+    );
+
+    const listAfterRestore = await listClinicLeads(archiveClinic.id);
+    check(
+      "the restored lead is visible in the default list again",
+      listAfterRestore.some((item) => item.id === targetLead.id),
+    );
+
+    const dashboardAfterRestore = await getDashboardData(archiveClinic.id);
+    check(
+      "dashboard metrics count it again",
+      dashboardAfterRestore.metrics.totalLeads === dashboardBefore.metrics.totalLeads,
+      `totalLeads=${dashboardAfterRestore.metrics.totalLeads}`,
+    );
+
+    const dependentsAfterRestore = await countDependents(targetLead.id);
+    check(
+      "the archive/restore round trip preserves analysis, tasks and notes",
+      dependentsAfterRestore.analyses === dependentsBefore.analyses &&
+        dependentsAfterRestore.tasks === dependentsBefore.tasks &&
+        dependentsAfterRestore.notes === dependentsBefore.notes,
+      JSON.stringify(dependentsAfterRestore),
+    );
+
+    console.log("\n14f. Permanent deletion is OWNER only");
+
+    const staffDelete = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveStaff.id,
+      confirmation: "DELETE",
+    });
+    check(
+      "a STAFF member cannot permanently delete a lead",
+      !staffDelete.ok,
+      staffDelete.ok ? "unexpectedly succeeded" : staffDelete.error,
+    );
+
+    const adminDelete = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveAdmin.id,
+      confirmation: "DELETE",
+    });
+    check(
+      "an ADMIN cannot permanently delete a lead either",
+      !adminDelete.ok,
+      adminDelete.ok ? "unexpectedly succeeded" : adminDelete.error,
+    );
+
+    check(
+      "the refused deletes left the lead and its dependents intact",
+      (await prisma.lead.count({ where: { id: targetLead.id } })) === 1 &&
+        (await countDependents(targetLead.id)).analyses === 1,
+    );
+
+    const wrongConfirmation = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+      confirmation: "delete",
+    });
+    check(
+      "even the owner needs the exact confirmation value",
+      !wrongConfirmation.ok,
+      wrongConfirmation.ok ? "unexpectedly succeeded" : wrongConfirmation.error,
+    );
+    check(
+      "the lead survives a mistyped confirmation",
+      (await prisma.lead.count({ where: { id: targetLead.id } })) === 1,
+    );
+
+    const crossClinicDelete = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: otherClinicLead.id,
+      actorUserId: archiveOwner.id,
+      confirmation: otherClinicLead.name,
+    });
+    check(
+      "a clinic cannot permanently delete another clinic's lead",
+      !crossClinicDelete.ok,
+      crossClinicDelete.ok ? "unexpectedly succeeded" : crossClinicDelete.error,
+    );
+    check(
+      "the cross-clinic delete attempt left the other clinic's lead intact",
+      (await prisma.lead.count({ where: { id: otherClinicLead.id } })) === 1,
+    );
+
+    console.log("\n14g. Owner deletes a lead and the cascades do the rest");
+
+    const deleted = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: targetLead.id,
+      actorUserId: archiveOwner.id,
+      confirmation: targetLead.name,
+    });
+    check(
+      "the owner can permanently delete the lead by typing its name",
+      deleted.ok,
+      deleted.ok ? undefined : deleted.error,
+    );
+
+    check(
+      "the lead row is gone",
+      (await prisma.lead.count({ where: { id: targetLead.id } })) === 0,
+    );
+
+    const dependentsAfterDelete = await countDependents(targetLead.id);
+    check(
+      "the cascade removed the AI analysis",
+      dependentsAfterDelete.analyses === 0,
+      `count=${dependentsAfterDelete.analyses}`,
+    );
+    check(
+      "the cascade removed the follow-up tasks",
+      dependentsAfterDelete.tasks === 0,
+      `count=${dependentsAfterDelete.tasks}`,
+    );
+    check(
+      "the cascade removed the internal notes",
+      dependentsAfterDelete.notes === 0,
+      `count=${dependentsAfterDelete.notes}`,
+    );
+    check(
+      "the cascade removed the activity history",
+      dependentsAfterDelete.activities === 0,
+      `count=${dependentsAfterDelete.activities}`,
+    );
+
+    const siblingDependents = await countDependents(controlLead.id);
+    check(
+      "the sibling lead in the same clinic keeps its records",
+      siblingDependents.analyses === 1 &&
+        siblingDependents.tasks >= 1 &&
+        siblingDependents.notes === 1 &&
+        siblingDependents.activities >= 3,
+      JSON.stringify(siblingDependents),
+    );
+    check(
+      "the other clinic's lead is unaffected",
+      (await prisma.lead.count({ where: { id: otherClinicLead.id } })) === 1,
+    );
+
+    // The confirmation word works on an archived lead too.
+    await archiveLead({
+      clinicId: archiveClinic.id,
+      leadId: controlLead.id,
+      actorUserId: archiveOwner.id,
+    });
+    const deletedArchived = await permanentlyDeleteLead({
+      clinicId: archiveClinic.id,
+      leadId: controlLead.id,
+      actorUserId: archiveOwner.id,
+      confirmation: "DELETE",
+    });
+    check(
+      "an archived lead can be permanently deleted with DELETE",
+      deletedArchived.ok,
+      deletedArchived.ok ? undefined : deletedArchived.error,
+    );
+    check(
+      "the archived lead's dependents cascade away as well",
+      Object.values(await countDependents(controlLead.id)).every((count) => count === 0),
+    );
+
+    console.log("\n14h. The polished demo leads are untouched");
+
+    const currentLeads = await prisma.lead.findMany({ select: { id: true, archivedAt: true } });
+    const currentById = new Map(
+      currentLeads.map((lead) => [lead.id, lead.archivedAt?.getTime() ?? null]),
+    );
+
+    check(
+      "every lead that existed before this run is still present",
+      baselineLeads.every((lead) => currentById.has(lead.id)),
+      `baseline=${baselineLeads.length} present=${currentLeads.length}`,
+    );
+    check(
+      `all ${baselineLeads.length} pre-existing (demo) leads are unarchived and unchanged`,
+      baselineLeads.every((lead) => currentById.get(lead.id) === (lead.archivedAt?.getTime() ?? null)),
+    );
   } finally {
     // Keep the development database clean: the seed owns the demo data.
     if (leadId) {
@@ -655,6 +1274,9 @@ async function main() {
     }
     if (tempClinicId) {
       await prisma.clinic.delete({ where: { id: tempClinicId } }).catch(() => {});
+    }
+    for (const clinicId of archiveClinicIds) {
+      await prisma.clinic.delete({ where: { id: clinicId } }).catch(() => {});
     }
     await prisma.lead
       .deleteMany({ where: { email: { contains: "e2e-public-" } } })

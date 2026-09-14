@@ -23,6 +23,8 @@ const ACTIVITY_LABELS: Record<ActivityType, string> = {
   FOLLOW_UP_COMPLETED: "Follow-up task completed",
   EMAIL_ALERT_SENT: "Email alert sent",
   EMAIL_ALERT_FAILED: "Email alert failed",
+  LEAD_ARCHIVED: "Lead archived",
+  LEAD_RESTORED: "Lead restored",
 };
 
 const ACTIVITY_TONE: Record<ActivityType, string> = {
@@ -40,6 +42,8 @@ const ACTIVITY_TONE: Record<ActivityType, string> = {
   FOLLOW_UP_COMPLETED: "bg-violet-700",
   EMAIL_ALERT_SENT: "bg-teal-500",
   EMAIL_ALERT_FAILED: "bg-orange-500",
+  LEAD_ARCHIVED: "bg-slate-500",
+  LEAD_RESTORED: "bg-sky-600",
 };
 
 function formatDateTime(value: Date): string {

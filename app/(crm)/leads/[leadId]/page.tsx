@@ -5,11 +5,12 @@ import { notFound } from "next/navigation";
 import { ActivityTimeline } from "@/components/leads/activity-timeline";
 import { AiAnalysisPanel } from "@/components/leads/ai-analysis-panel";
 import { FollowUpTaskCard } from "@/components/leads/follow-up-task-card";
-import { StatusBadge } from "@/components/leads/lead-badges";
+import { LeadActionsMenu } from "@/components/leads/lead-actions-menu";
+import { ArchiveBadge, StatusBadge } from "@/components/leads/lead-badges";
 import { LeadStatusForm } from "@/components/leads/lead-status-form";
 import { NoteForm } from "@/components/leads/note-form";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { requireClinicContext } from "@/lib/auth/clinic";
+import { isClinicOwner, requireClinicContext } from "@/lib/auth/clinic";
 import { getClinicLeadDetail } from "@/lib/services/leads";
 import {
   patientInsuranceLabel,
@@ -37,15 +38,18 @@ function formatDateTime(value: Date): string {
 }
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ leadId: string }> }) {
-  const { clinic } = await requireClinicContext();
+  const { clinic, role } = await requireClinicContext();
   const { leadId } = await params;
 
-  // Always scoped by BOTH lead id and the authorized clinic id.
+  // Always scoped by BOTH lead id and the authorized clinic id. Archived leads
+  // stay readable: archiving is a CRM view state, not a permission change.
   const lead = await getClinicLeadDetail(clinic.id, leadId);
 
   if (!lead) {
     notFound();
   }
+
+  const archived = lead.archivedAt !== null;
 
   return (
     <div className="space-y-6">
@@ -61,8 +65,23 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ lea
             Created {formatDateTime(lead.createdAt)} · {serviceInterestLabel(lead.serviceInterest)}
           </p>
         </div>
-        <StatusBadge status={lead.status} />
+        <div className="flex flex-wrap items-center gap-2">
+          {archived ? <ArchiveBadge /> : null}
+          <StatusBadge status={lead.status} />
+        </div>
       </div>
+
+      {archived && lead.archivedAt ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <p className="text-sm font-semibold text-amber-900">This lead is archived</p>
+          <p className="mt-1 text-sm text-amber-800">
+            Archived {formatDateTime(lead.archivedAt)}. It is hidden from the lead list, the
+            dashboard metrics and the open follow-up queue. Nothing was deleted — its AI analysis,
+            follow-up tasks, notes and activity history are all intact, and you can restore it from
+            More actions.
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -177,6 +196,21 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ lea
                   createdAt: activity.createdAt,
                   actor: activity.actor,
                 }))}
+              />
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="More actions"
+              description="Archive and restore are reversible. Permanent deletion is not."
+            />
+            <CardBody>
+              <LeadActionsMenu
+                leadId={lead.id}
+                leadName={lead.name}
+                archived={archived}
+                canDelete={isClinicOwner(role)}
               />
             </CardBody>
           </Card>
