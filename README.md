@@ -8,6 +8,40 @@ The project is designed as a portfolio-ready example of an AI-powered business a
 
 ---
 
+# PRODUCT SCREENSHOTS
+
+## Public Patient Enquiry Form
+
+Patients can submit appointment enquiries through a clinic-specific public form, including urgency, preferred contact method, insurance status, and payment preference.
+
+![Public patient enquiry form](docs/screenshots/01-public-enquiry-form.png)
+
+## CRM Dashboard
+
+Clinic staff get a live overview of total leads, HOT leads, follow-ups due, appointments set, and recent lead activity.
+
+![AI Dental Lead CRM dashboard](docs/screenshots/03-dashboard.png)
+
+## Lead Pipeline
+
+Leads are automatically scored and prioritised as HOT, WARM, or COLD while staff move them through the CRM workflow.
+
+![Lead pipeline](docs/screenshots/02-leads-table.png)
+
+## AI Lead Qualification
+
+Each lead receives structured AI qualification, a lead score, recommended action, staff-review draft reply, follow-up recommendation, and activity timeline.
+
+![AI lead qualification detail](docs/screenshots/04-ai-lead-detail.png)
+
+## Archived Lead Management
+
+Leads can be archived without deleting their analysis, tasks, notes, or activity history. Owners can restore archived leads or permanently delete them when appropriate.
+
+![Archived lead management](docs/screenshots/05-archived-leads.png)
+
+---
+
 # CORE WORKFLOW
 
 Public Dental Lead Form
