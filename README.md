@@ -6,6 +6,12 @@ It captures prospective patients from a public inquiry form, stores the leads in
 
 The project is designed as a portfolio-ready example of an AI-powered business application.
 
+## Live Demo
+
+**Production:** https://ai-dental-lead-crm.vercel.app
+
+**Public patient form:** https://ai-dental-lead-crm.vercel.app/c/smileworks-dental
+
 ---
 
 # PRODUCT SCREENSHOTS
