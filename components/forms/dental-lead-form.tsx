@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 
 import { submitLeadAction } from "@/app/c/[clinicSlug]/actions";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,21 @@ export function DentalLeadForm({ clinicSlug }: { clinicSlug: string }) {
   const [state, formAction, isPending] = useActionState(submitLeadAction, initialState);
   const fallback = state.values ?? {};
 
+  // React 19 resets a form after every form action — including one that returned
+  // an error (react.dev/blog/2024/12/05/react-19). That reset snaps the selects
+  // back to their mount-time placeholder and clears the consent box, while the
+  // echoed values below are not re-applied to controls that are already mounted.
+  // Bumping a version on each new result remounts the fields, so a visitor keeps
+  // everything they entered. Adjusting state during render is the documented way
+  // to derive state from a changed value.
+  const [seenState, setSeenState] = useState(state);
+  const [formVersion, setFormVersion] = useState(0);
+
+  if (seenState !== state) {
+    setSeenState(state);
+    setFormVersion((version) => version + 1);
+  }
+
   if (state.status === "success") {
     return (
       <div
@@ -36,7 +51,7 @@ export function DentalLeadForm({ clinicSlug }: { clinicSlug: string }) {
   }
 
   return (
-    <form action={formAction} className="space-y-5" noValidate>
+    <form key={formVersion} action={formAction} className="space-y-5" noValidate>
       <input type="hidden" name="clinicSlug" value={clinicSlug} />
 
       {state.status === "error" && state.message ? (
@@ -229,6 +244,7 @@ export function DentalLeadForm({ clinicSlug }: { clinicSlug: string }) {
             name="consent"
             type="checkbox"
             required
+            defaultChecked={fallback.consent === "on"}
             className="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-700 focus:ring-sky-500"
             aria-invalid={Boolean(state.fieldErrors?.consent)}
           />

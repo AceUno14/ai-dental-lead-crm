@@ -17,37 +17,47 @@ export async function createPublicLead(input: {
 }) {
   const { clinicId, data } = input;
 
-  return prisma.$transaction(async (tx) => {
-    const lead = await tx.lead.create({
-      data: {
-        clinicId,
-        name: data.name,
-        email: data.email,
-        phone: data.phone,
-        serviceInterest: data.serviceInterest,
-        preferredContactMethod: data.preferredContactMethod,
-        submittedUrgency: data.urgency,
-        message: data.message,
-        // Optional patient-reported answers. The schema already normalises a
-        // missing or unsupported answer to UNKNOWN.
-        patientInsuranceStatus: data.patientInsuranceStatus,
-        paymentPreference: data.paymentPreference,
-        consent: data.consent,
-      },
-    });
+  return prisma.$transaction(
+    async (tx) => {
+      const lead = await tx.lead.create({
+        data: {
+          clinicId,
+          name: data.name,
+          email: data.email,
+          phone: data.phone,
+          serviceInterest: data.serviceInterest,
+          preferredContactMethod: data.preferredContactMethod,
+          submittedUrgency: data.urgency,
+          message: data.message,
+          // Optional patient-reported answers. The schema already normalises a
+          // missing or unsupported answer to UNKNOWN.
+          patientInsuranceStatus: data.patientInsuranceStatus,
+          paymentPreference: data.paymentPreference,
+          consent: data.consent,
+        },
+      });
 
-    await recordActivity(
-      {
-        clinicId,
-        leadId: lead.id,
-        type: ActivityType.LEAD_CREATED,
-        description: "Lead submitted through the public enquiry form.",
-      },
-      tx,
-    );
+      await recordActivity(
+        {
+          clinicId,
+          leadId: lead.id,
+          type: ActivityType.LEAD_CREATED,
+          description: "Lead submitted through the public enquiry form.",
+        },
+        tx,
+      );
 
-    return lead;
-  });
+      return lead;
+    },
+    {
+      // A suspended Neon compute can take longer to answer than Prisma's 2s
+      // maxWait / 5s interactive-transaction defaults, which used to fail the
+      // first enquiry of the day and lose it. Both values stay well inside the
+      // 60s serverless budget declared on the public route.
+      maxWait: 10_000,
+      timeout: 20_000,
+    },
+  );
 }
 
 /**

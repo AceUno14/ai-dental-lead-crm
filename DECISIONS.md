@@ -1086,6 +1086,53 @@ their payment preference alone.
 
 ---
 
+# D-048 — The Public Submission Result Reflects Persistence, Not Downstream Steps
+
+The public enquiry action reports the outcome of the ONE thing the visitor actually asked for:
+storing the enquiry. Everything after persistence is best effort and can never change that result.
+
+Two phases, deliberately:
+
+1. **persist** — clinic resolution from the slug, duplicate check, `createPublicLead`. A failure here
+   means nothing was stored, so the visitor may safely be told to try again (and the failure log
+   carries `stage: "persist"`).
+2. **post-persist** — AI qualification, the staff email alert and the environment lookup for the
+   alert URL. Failures are logged with `stage: "post-persist"` plus the leadId, and recorded on the
+   lead where possible (`AI_ANALYSIS_FAILED`) so staff can retry from the CRM. They never surface to
+   the visitor, because the lead is already stored and the visitor is not the right person to fix an
+   AI, email or environment problem.
+
+Why this is a decision and not just a bug fix: `runLeadAnalysis` already returned a result instead of
+throwing, but the action still wrapped every later step in the same try/catch, so any post-persistence
+exception (an invalid `NEXT_PUBLIC_APP_URL` read for the alert link, a timeline write, a transaction
+timeout) produced the generic failure message for a stored enquiry. The retry then only appeared to
+"work" because duplicate detection returned the already-stored enquiry — the failure was invisible in
+logs and looked like a flaky form.
+
+Consequences:
+
+- A visitor is never told an enquiry failed when it was stored, and is never told it succeeded when it
+  was not. The pre-persistence phase keeps the existing safe generic error and the echoed form values.
+- `lib/services/lead-analysis.ts` is now non-throwing on every branch: the `AI_ANALYSIS_STARTED`,
+  `AI_ANALYSIS_COMPLETED` and `AI_ANALYSIS_FAILED` timeline markers are each best effort, so a
+  timeline write can neither reject an already-persisted lead nor downgrade a stored analysis.
+- `createPublicLead`'s interactive transaction declares `maxWait: 10_000` / `timeout: 20_000` instead
+  of relying on Prisma's 2s/5s defaults, which a suspended Neon compute can exceed on the first
+  enquiry of the day. Both values stay well inside the 60s serverless budget declared on the public
+  route.
+- The public form is uncontrolled and driven by `useActionState`; React 19 resets a form after every
+  form action, including a failing one (react.dev/blog/2024/12/05/react-19), which reset the selects
+  and the consent checkbox while already-mounted text inputs kept their updated `defaultValue`s. The
+  form therefore tracks each new action result and bumps a version key so the echoed values are
+  applied to freshly mounted fields, with `defaultChecked` for consent. The server action stays a
+  Server Action used directly by the form, so progressive enhancement and server-side validation are
+  unchanged.
+- Regression coverage lives in `scripts/verify-e2e.mts` section 13: the reproduction is deterministic
+  (an invalid `NEXT_PUBLIC_APP_URL` fails only after persistence) and no assertion needs a real AI or
+  email provider.
+
+---
+
 # DECISION CHANGE RULE
 
 Do not modify accepted decisions casually.

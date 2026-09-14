@@ -50,6 +50,9 @@ async function main() {
   const { addLeadNote, updateLeadStatus } = await import("@/lib/services/lead-workflow");
   const { setFollowUpTaskStatus } = await import("@/lib/services/follow-up-tasks");
   const { publicLeadSchema } = await import("@/lib/validation/lead");
+  // The public Server Action itself, so the submission contract (not just the
+  // services it calls) is exercised end to end.
+  const { submitLeadAction } = await import("@/app/c/[clinicSlug]/actions");
 
   const marker = Date.now().toString(36);
   let leadId: string | null = null;
@@ -499,6 +502,149 @@ async function main() {
       typeof dashboardAfter.metrics.followUpsDue === "number",
       `followUpsDue=${dashboardAfter.metrics.followUpsDue}`,
     );
+
+    console.log("\n13. Public submission survives a post-persistence failure (regression)");
+
+    // The invariant under test: once the enquiry is stored, nothing downstream
+    // may tell the visitor it failed. `getServerEnv()` is reached only by the
+    // public action, and only after the lead and its analysis exist, so an
+    // invalid NEXT_PUBLIC_APP_URL reproduces a post-persistence failure without
+    // touching the database. Before the fix this returned the generic failure
+    // message while the lead had in fact been created, and the next attempt
+    // only appeared to work because duplicate detection returned the
+    // already-stored enquiry.
+    const publicMarker = `${marker}p`;
+    const publicEmail = `e2e-public-${publicMarker}@example.test`;
+    const aiOutageEmail = `e2e-public-ai-${publicMarker}@example.test`;
+
+    const buildPublicSubmission = (email: string) => {
+      const data = new FormData();
+      data.set("clinicSlug", "bright-smile-dental");
+      data.set("name", "E2E Public Patient");
+      data.set("email", email);
+      data.set("phone", "555-0198");
+      data.set("serviceInterest", "general_checkup");
+      data.set("preferredContactMethod", "EMAIL");
+      data.set("urgency", "THIS_WEEK");
+      data.set("patientInsuranceStatus", "NO");
+      data.set("paymentPreference", "FINANCING");
+      data.set("message", "Regression enquiry: a loose filling and sore gums on the left side.");
+      data.set("consent", "on");
+      return data;
+    };
+
+    // A rejected submission must still echo everything the visitor entered, so
+    // the form can restore it after React's post-action reset.
+    const invalidSubmission = buildPublicSubmission(publicEmail);
+    invalidSubmission.set("message", "too short");
+    const rejected = await submitLeadAction({ status: "idle" }, invalidSubmission);
+    check(
+      "an invalid submission is rejected with field errors",
+      rejected.status === "error" && Boolean(rejected.fieldErrors?.message),
+      rejected.status,
+    );
+    check(
+      "a rejected submission echoes every entered field back",
+      rejected.values?.name === "E2E Public Patient" &&
+        rejected.values?.email === publicEmail &&
+        rejected.values?.patientInsuranceStatus === "NO" &&
+        rejected.values?.paymentPreference === "FINANCING" &&
+        rejected.values?.consent === "on",
+    );
+
+    const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+    const previousAiMode = process.env.AI_MODE;
+    const previousAiKey = process.env.AI_API_KEY;
+
+    try {
+      process.env.NEXT_PUBLIC_APP_URL = "not-a-url";
+
+      const firstAttempt = await submitLeadAction(
+        { status: "idle" },
+        buildPublicSubmission(publicEmail),
+      );
+      check(
+        "a failure after persistence still reports the enquiry as received",
+        firstAttempt.status === "success",
+        `status=${firstAttempt.status} message=${firstAttempt.message ?? ""}`,
+      );
+
+      const storedPublic = await prisma.lead.findFirst({ where: { email: publicEmail } });
+      if (storedPublic) {
+        extraLeadIds.push(storedPublic.id);
+      }
+      check("the enquiry is persisted before that failure", storedPublic !== null);
+      check(
+        "the patient-reported answers are stored with it",
+        storedPublic?.patientInsuranceStatus === "NO" &&
+          storedPublic?.paymentPreference === "FINANCING",
+      );
+      const publicAnalysis = storedPublic
+        ? await prisma.leadAnalysis.findUnique({ where: { leadId: storedPublic.id } })
+        : null;
+      check("AI qualification still runs for it", publicAnalysis !== null);
+
+      const retry = await submitLeadAction(
+        { status: "idle" },
+        buildPublicSubmission(publicEmail),
+      );
+      check(
+        "an immediate retry reports success too",
+        retry.status === "success",
+        `status=${retry.status} message=${retry.message ?? ""}`,
+      );
+      const duplicates = await prisma.lead.count({ where: { email: publicEmail } });
+      check(
+        "duplicate protection stays intact (exactly one lead)",
+        duplicates === 1,
+        `count=${duplicates}`,
+      );
+
+      // An AI outage after persistence must not reject the stored lead either.
+      process.env.AI_MODE = "live";
+      delete process.env.AI_API_KEY;
+
+      const aiOutage = await submitLeadAction(
+        { status: "idle" },
+        buildPublicSubmission(aiOutageEmail),
+      );
+      check(
+        "an AI outage after persistence still reports success",
+        aiOutage.status === "success",
+        `status=${aiOutage.status} message=${aiOutage.message ?? ""}`,
+      );
+
+      const aiLead = await prisma.lead.findFirst({ where: { email: aiOutageEmail } });
+      if (aiLead) {
+        extraLeadIds.push(aiLead.id);
+      }
+      check("the lead survives the AI outage", aiLead !== null);
+
+      if (aiLead) {
+        const failureRecorded = await prisma.leadActivity.findFirst({
+          where: { leadId: aiLead.id, type: "AI_ANALYSIS_FAILED" },
+        });
+        check("the AI failure is recorded on the lead", failureRecorded !== null);
+      }
+    } finally {
+      if (previousAppUrl === undefined) {
+        delete process.env.NEXT_PUBLIC_APP_URL;
+      } else {
+        process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
+      }
+
+      if (previousAiMode === undefined) {
+        delete process.env.AI_MODE;
+      } else {
+        process.env.AI_MODE = previousAiMode;
+      }
+
+      if (previousAiKey === undefined) {
+        delete process.env.AI_API_KEY;
+      } else {
+        process.env.AI_API_KEY = previousAiKey;
+      }
+    }
   } finally {
     // Keep the development database clean: the seed owns the demo data.
     if (leadId) {
@@ -510,6 +656,9 @@ async function main() {
     if (tempClinicId) {
       await prisma.clinic.delete({ where: { id: tempClinicId } }).catch(() => {});
     }
+    await prisma.lead
+      .deleteMany({ where: { email: { contains: "e2e-public-" } } })
+      .catch(() => {});
     await prisma.user.deleteMany({ where: { email: { contains: "e2e-" } } }).catch(() => {});
     await prisma.$disconnect();
   }

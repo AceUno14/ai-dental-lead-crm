@@ -4,6 +4,132 @@ Most recent session first.
 
 ---
 
+# SESSION 17 — PUBLIC ENQUIRY FIRST-SUBMISSION FAILURE: ROOT CAUSE, FIX AND REGRESSION TEST
+
+Date: 2026-09-14 · Scope: investigate the reproducible production report that the FIRST submission of
+the public enquiry form shows the generic failure message while an immediate retry works, and the
+form-state loss that follows it · STATUS: **FIXED AND VERIFIED against the development database.
+Production NOT touched, nothing committed, pushed or deployed — the fix is not live in production.**
+
+## Reported behaviour
+
+`/c/smileworks-dental` (production): the first valid enquiry shows "We could not submit your enquiry
+right now. Please try again, or call the clinic directly."; submitting again immediately usually
+works. After the failed submission the selects reset to their placeholders and consent unchecks,
+while the text fields keep their values.
+
+## Reproduction — deterministic, against the development database
+
+The regression section (`scripts/verify-e2e.mts` section 13) was written and run BEFORE the fix.
+Invalidating `NEXT_PUBLIC_APP_URL` reproduces a failure that happens only AFTER persistence, because
+`getServerEnv()` is the app's only environment read and is reached only from the public action, after
+the lead and its analysis exist. No schema or row was touched to produce it:
+
+```
+13. Public submission survives a post-persistence failure (regression)
+[public-lead] submission failed {
+  reason: 'Invalid server environment configuration. NEXT_PUBLIC_APP_URL: Invalid URL'
+}
+  FAIL  a failure after persistence still reports the enquiry as received — status=error message=We could not submit your enquiry right now. Please try again, or call the clinic directly.
+  PASS  the enquiry is persisted before that failure
+  PASS  the patient-reported answers are stored with it
+  PASS  AI qualification still ran for it
+  PASS  an immediate retry reports success too
+  PASS  duplicate protection stays intact (exactly one lead)
+```
+
+That is the reported symptom exactly, including the retry: the first attempt returned the generic
+failure message while the lead had ALREADY been created, and the second attempt only "worked"
+because `findRecentDuplicateLead` matched the stored enquiry and returned the already-received
+success.
+
+## Root cause
+
+`submitLeadAction` wrapped everything after clinic resolution in a single try/catch and mapped any
+exception to the generic failure message. The lead is deliberately persisted before AI qualification
+(the documented invariant), but the visitor-visible result did not reflect persistence: a failure in
+any later step — the AI/alert step, an environment value read for the alert link, or a timeline write
+— told the visitor the enquiry had failed even though it was stored. Retrying appeared to work solely
+because duplicate detection returns success for a stored enquiry, which also made the defect look like
+a flaky form rather than a lost-success bug.
+
+Candidates found by code reading, in execution order. Production logs are NOT accessible from this
+environment (no linked Vercel project — there is no `.vercel` directory — and log access was not
+authorized), so the single production throw site is deliberately NOT claimed:
+
+1. `getServerEnv().NEXT_PUBLIC_APP_URL` — the only `getServerEnv()` call site in the app, reached after
+   persistence; an invalid `NEXT_PUBLIC_APP_URL` throws on every submission that gets that far. This is
+   the deterministic candidate, and the one the regression test uses.
+2. `recordActivity(AI_ANALYSIS_STARTED)` in `runLeadAnalysis` sat OUTSIDE the analysis try/catch.
+3. A suspended Neon compute exceeding Prisma's default 2s maxWait / 5s interactive-transaction
+   timeout in `createPublicLead` (pre-persistence, so no lead would exist — this is the one case where
+   "try again" is the correct message).
+4. An AI failure whose own `AI_ANALYSIS_FAILED` marker write failed.
+
+An AI outage alone was NOT the cause: `runLeadAnalysis` already caught provider failures and returned
+`{ ok: false }`, and the new check "an AI outage after persistence still reports success" passes both
+before and after the fix.
+
+## Fix
+
+* `app/c/[clinicSlug]/actions.ts` — split into two explicit phases. Phase 1 (clinic lookup, duplicate
+  check, `createPublicLead`) is the only path that can return the failure message, and its log line
+  now carries `stage: "persist"`. Phase 2 (`qualifyAndAlert`: AI qualification, staff alert and the
+  environment lookup) is best effort, cannot change the visitor's result, logs `stage:
+  "post-persist"` with the leadId, and records the AI failure on the lead for a staff retry.
+  `findPublicClinicBySlug` moved inside the guarded phase so a database failure there returns the safe
+  message instead of an unhandled page error. Consent is now echoed back with the submitted values.
+  Validation, duplicate protection, tenant resolution and error handling are unchanged.
+* `lib/services/lead-analysis.ts` — the analysis path can no longer throw: the `AI_ANALYSIS_STARTED`,
+  `AI_ANALYSIS_COMPLETED` and `AI_ANALYSIS_FAILED` timeline markers are each best effort (logged on
+  failure), so a timeline write can neither reject an already-persisted lead nor downgrade a stored
+  analysis.
+* `lib/services/leads.ts` — `createPublicLead`'s interactive transaction now declares
+  `maxWait: 10_000, timeout: 20_000` (rationale in D-048). The lead and its `LEAD_CREATED` activity
+  remain atomic; both values stay well inside the 60s serverless budget on the public route.
+* `components/forms/dental-lead-form.tsx` — React 19 resets a form after every form action, including
+  one that returns an error (react.dev/blog/2024/12/05/react-19). That reset is why the selects
+  snapped back to their mount-time placeholder and consent uncheched, while already-mounted text
+  inputs kept their updated `defaultValue`s. The form now tracks each new action result and bumps a
+  version key, remounting the fields so the echoed values are applied again; consent uses
+  `defaultChecked`. The form stays uncontrolled and still calls the Server Action directly through
+  `useActionState`, so progressive enhancement is preserved.
+
+## Verification (development only)
+
+```
+npx tsx scripts/db-identity.mts        -> DB FINGERPRINT 24ea81a95814 (development; inherited
+                                          DATABASE_URL unset, .env.local only)
+npx tsc --noEmit                      -> PASS (exit 0)
+npm run lint                          -> PASS (0 problems)
+npm run build                         -> PASS (8/8 static pages, 9 routes)
+npm run verify:email                  -> PASS
+npm run verify:ai                     -> PASS
+npm run verify:ai -- --self-test      -> PASS
+npm run verify:e2e                    -> PASS 84 checks, 0 failures (was 73; 11 new)
+next start  GET /c/bright-smile-dental -> 200; both patient questions and the consent checkbox
+                                          still render
+```
+
+Section 13 additionally asserts: an invalid submission is rejected with field errors AND echoes every
+entered field back (including consent), a post-persistence failure still reports the enquiry as
+received, the enquiry is persisted with its patient-reported answers and its analysis, an immediate
+retry reports success, exactly one lead exists (duplicate protection intact), and an AI outage after
+persistence still reports success with the lead preserved and `AI_ANALYSIS_FAILED` recorded.
+
+The AI-outage check temporarily sets `AI_MODE=live` with `AI_API_KEY` removed — a deterministic
+configuration failure that needs no network — and restores every touched environment value in a
+`finally` block, exactly like the invalid-URL case. All created rows are deleted in the script's
+`finally` block as usual.
+
+## Production
+
+Not touched: no migration, no seed, no schema or data change, no Vercel change, no push, no deploy,
+and the production database was neither read nor written in this session. The fix is local-only and
+must be deployed before the production behaviour changes.
+
+---
+
 # SESSION 16 — AUTHORIZED PRODUCTION ROLLOUT: PATIENT INSURANCE/PAYMENT MIGRATION APPLIED
 
 Date: 2026-09-14 · Scope: apply the single verified pending migration

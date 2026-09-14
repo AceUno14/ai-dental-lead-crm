@@ -34,13 +34,22 @@ export async function runLeadAnalysis(
   lead: AnalysisLeadInput,
   options: { actorUserId?: string | null } = {},
 ): Promise<AnalysisRunResult> {
-  await recordActivity({
-    clinicId: lead.clinicId,
-    leadId: lead.id,
-    type: ActivityType.AI_ANALYSIS_STARTED,
-    description: "AI qualification started.",
-    actorUserId: options.actorUserId ?? null,
-  });
+  // Recording the start marker is best effort. A timeline write must never be
+  // the reason an already-persisted lead looks like a failed operation.
+  try {
+    await recordActivity({
+      clinicId: lead.clinicId,
+      leadId: lead.id,
+      type: ActivityType.AI_ANALYSIS_STARTED,
+      description: "AI qualification started.",
+      actorUserId: options.actorUserId ?? null,
+    });
+  } catch (error) {
+    console.error("[lead-analysis] could not record the analysis start", {
+      leadId: lead.id,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+  }
 
   try {
     const { result, model } = await analyzeLead({
@@ -110,21 +119,29 @@ export async function runLeadAnalysis(
       });
     });
 
-    // 2. Create/refresh the AI-recommended follow-up task. A failure here is
-    // logged and recorded but never fails the analysis itself.
-    await recordActivity({
-      clinicId: lead.clinicId,
-      leadId: lead.id,
-      type: ActivityType.AI_ANALYSIS_COMPLETED,
-      description: `AI qualification completed with a score of ${result.leadScore}/100 (${result.priority}).`,
-      actorUserId: options.actorUserId ?? null,
-      metadata: {
-        leadScore: result.leadScore,
-        priority: result.priority,
-        urgency: result.urgency,
-        model,
-      },
-    });
+    // The analysis row and the AI follow-up task are written. The timeline
+    // marker is best effort: a write failure here must not downgrade an
+    // analysis that has already been stored.
+    try {
+      await recordActivity({
+        clinicId: lead.clinicId,
+        leadId: lead.id,
+        type: ActivityType.AI_ANALYSIS_COMPLETED,
+        description: `AI qualification completed with a score of ${result.leadScore}/100 (${result.priority}).`,
+        actorUserId: options.actorUserId ?? null,
+        metadata: {
+          leadScore: result.leadScore,
+          priority: result.priority,
+          urgency: result.urgency,
+          model,
+        },
+      });
+    } catch (error) {
+      console.error("[lead-analysis] could not record the analysis completion", {
+        leadId: lead.id,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+    }
 
     return {
       ok: true,
@@ -138,6 +155,9 @@ export async function runLeadAnalysis(
     // Only safe, non-private diagnostics are recorded or logged.
     console.error("[lead-analysis] analysis failed", { leadId: lead.id, reason });
 
+    // Recording the failure is best effort as well: the failure result must be
+    // returned even when the timeline write fails, so the caller learns that
+    // the lead itself was untouched.
     await recordActivity({
       clinicId: lead.clinicId,
       leadId: lead.id,
@@ -145,6 +165,11 @@ export async function runLeadAnalysis(
       description: "AI qualification failed. Staff can retry the analysis.",
       actorUserId: options.actorUserId ?? null,
       metadata: { reason },
+    }).catch((recordError: unknown) => {
+      console.error("[lead-analysis] could not record the analysis failure", {
+        leadId: lead.id,
+        reason: recordError instanceof Error ? recordError.message : "unknown",
+      });
     });
 
     return { ok: false, error: reason };

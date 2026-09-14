@@ -2,12 +2,16 @@
 
 ## CURRENT EXECUTION
 
-Current Phase: PHASE 12 — PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE (session 14), which
-followed PHASE 11 — DENTAL CONVERSION WORKFLOW (session 7). Both are fully verified on the
-DEVELOPMENT database, and all migrations are now applied to PRODUCTION as well (session 16).
+Current Phase: PHASE 13 — PUBLIC SUBMISSION RELIABILITY (session 17), which followed PHASE 12 —
+PATIENT-REPORTED INSURANCE AND PAYMENT PREFERENCE (session 14) and PHASE 11 — DENTAL CONVERSION
+WORKFLOW (session 7). All are verified on the DEVELOPMENT database, and all migrations are applied to
+PRODUCTION as well (session 16).
 
-Current Task: NONE. Development AND production are both fully migrated (see below). No outstanding
-work in the queue. Nothing is committed, pushed or deployed beyond what is recorded here.
+Current Task: NONE. The session 17 first-submission defect is fixed and verified against the
+development database, but the fix is NOT deployed — production still runs the previous revision and
+needs a redeploy before the visitor-visible behaviour changes. The production database was neither
+read nor written in session 17, and nothing is committed, pushed or deployed beyond what is recorded
+here.
 
 PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED (session 16, authorized rollout):
 
@@ -28,6 +32,27 @@ PRODUCTION MIGRATION STATUS — ALL MIGRATIONS APPLIED (session 16, authorized r
   clinic 2, user 2 before and after).
 - `prisma migrate dev`, `db:seed`, `migrate resolve` and manual SQL were NOT run, and no Vercel
   variable was read or changed.
+
+Last Completed Task (session 17): T-045 — public enquiry first-submission failure: root cause found,
+smallest fix applied, regression-tested. ALL CHECKS GREEN.
+
+- Reported: the FIRST submission of a valid enquiry shows the generic failure message, an immediate
+  retry works, and after the failure the selects reset while the text fields keep their values.
+- Reproduced deterministically on development (verify-e2e section 13, written before the fix): an
+  invalid `NEXT_PUBLIC_APP_URL` fails only AFTER the lead and its analysis exist, so the first attempt
+  returned `status=error` while the lead was already stored, and the retry only "worked" because
+  duplicate detection returned the stored enquiry.
+- Root cause: the action mapped any exception from ANY post-persistence step to the generic failure
+  message, so the visitor-visible result did not reflect the only thing that had actually failed.
+- Fix: persist is now the only failing phase; AI qualification, the staff alert and the environment
+  lookup are best effort (`stage: "persist"` / `stage: "post-persist"` log markers);
+  `runLeadAnalysis` can no longer throw on any branch; `createPublicLead` declares explicit
+  transaction `maxWait`/`timeout`; the form remounts its fields from the echoed values (React 19
+  resets a form after every form action, including a failing one) and restores consent.
+- Validation, duplicate protection, tenant resolution and error handling are unchanged; no migration
+  and no schema change were needed.
+- `npm run verify:e2e` — **PASS 84 checks, 0 failures** (was 73; 11 new). Typecheck, lint, build,
+  `verify:email`, `verify:ai` and `verify:ai -- --self-test` all PASS.
 
 Last Completed Task (session 14): T-044 — patient-reported insurance + payment preference on the
 public enquiry form, end to end (form → Lead → AI → scoring → follow-up → CRM). ALL CHECKS GREEN.
@@ -2177,6 +2202,66 @@ pre-flight confirmed exactly one pending migration and an additive-only migratio
 `npx prisma migrate deploy` applied it. After: `npx prisma migrate status` reports "Database schema
 is up to date!"; both columns exist as NOT NULL enum columns defaulting to `'UNKNOWN'`; all 13
 existing leads read `UNKNOWN`; every table's row count is unchanged.
+
+---
+
+# PHASE 13 — PUBLIC SUBMISSION RELIABILITY (session 17)
+
+## T-045 — Public enquiry first-submission failure and form-state loss
+
+Status: DONE
+
+Dependencies:
+
+T-016 / T-022 (public form → lead persistence → AI qualification)
+
+Objective:
+
+Make the outcome a visitor sees reflect the ONLY thing they asked for — that their enquiry was
+stored — regardless of what fails later, and stop a failed submission from discarding what they
+entered.
+
+Reported behaviour (production):
+
+- First submission of a valid enquiry: "We could not submit your enquiry right now. Please try
+  again, or call the clinic directly." An immediate retry usually works.
+- After the failure, the selects reset to their placeholders and consent unchecks, while the text
+  fields keep their values.
+
+Root cause:
+
+`submitLeadAction` wrapped everything after clinic resolution in a single try/catch and mapped any
+exception to the generic failure message. The lead is intentionally persisted before AI
+qualification, so a failure in a later step (the AI/alert step, the environment value read for the
+alert link, or a timeline write) told the visitor the enquiry had failed although it was already
+stored. Retrying appeared to work only because `findRecentDuplicateLead` returned the stored enquiry.
+
+Scope:
+
+- `app/c/[clinicSlug]/actions.ts` — two phases: persist (the only failing path) and post-persist
+  (best effort). `findPublicClinicBySlug` guarded. Consent echoed back with the submitted values.
+- `lib/services/lead-analysis.ts` — no branch can throw; timeline markers are best effort.
+- `lib/services/leads.ts` — explicit transaction `maxWait: 10_000` / `timeout: 20_000`.
+- `components/forms/dental-lead-form.tsx` — remount the fields from the echoed values after each
+  action result, and restore the consent checkbox.
+- `scripts/verify-e2e.mts` — section 13 regression coverage.
+
+Acceptance Criteria:
+
+- The failure message is returned ONLY when nothing was stored.
+- An AI outage, an alert failure, a timeline-write failure or an invalid environment value after
+  persistence still reports the enquiry as received, and never deletes or rejects the lead.
+- A failed submission preserves every safe user-entered field, including consent.
+- Validation, duplicate protection, tenant resolution and error handling stay intact.
+
+Verification:
+
+`npx tsc --noEmit` PASS; `npm run lint` PASS; `npm run build` PASS; `npm run verify:email` PASS;
+`npm run verify:ai` (+ `--self-test`) PASS; `npm run verify:e2e` **84 checks, 0 failures** on the
+identity-verified development branch (fingerprint 24ea81a95814). See DECISIONS.md D-048 and the
+session 17 SESSION_REPORT entry.
+
+Not done in this session (requires explicit authorization): deploying the fix to production.
 
 ---
 
